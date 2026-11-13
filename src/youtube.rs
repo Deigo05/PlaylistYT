@@ -43,6 +43,35 @@ impl std::fmt::Display for QuotaExceeded {
 
 impl std::error::Error for QuotaExceeded {}
 
+/// Respuesta de error de la API, con el motivo (`reason`) que da Google.
+#[derive(Debug)]
+pub struct ApiError {
+    status: reqwest::StatusCode,
+    reason: Option<String>,
+    message: String,
+}
+
+impl ApiError {
+    /// Fallos pasajeros que suelen arreglarse reintentando. El más común es un 409
+    /// "The operation was aborted" al añadir el primer vídeo a una playlist recién creada.
+    fn is_transient(&self) -> bool {
+        self.status == reqwest::StatusCode::CONFLICT
+            || self.status.is_server_error()
+            || self.reason.as_deref() == Some("playlistNotFound")
+    }
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "YouTube respondió {}: {}", self.status, self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+/// Reintentos de `add_video` ante fallos pasajeros (esperas de 1, 2 y 4 s).
+const ADD_RETRIES: u32 = 3;
+
 pub struct YouTube {
     http: reqwest::Client,
     token: String,
@@ -101,8 +130,12 @@ impl YouTube {
             self.quota.lock().unwrap().exhaust();
             return Err(QuotaExceeded.into());
         }
-        let message = body["error"]["message"].as_str().unwrap_or("error desconocido");
-        bail!("YouTube respondió {status}: {message}")
+        Err(ApiError {
+            status,
+            reason: reasons.first().map(|r| r.to_string()),
+            message: body["error"]["message"].as_str().unwrap_or("error desconocido").to_string(),
+        }
+        .into())
     }
 
     /// Nombre del canal de la cuenta conectada.
@@ -135,18 +168,51 @@ impl YouTube {
             .ok_or_else(|| anyhow!("YouTube no devolvió el id de la playlist"))
     }
 
-    /// Añade un vídeo al final de la playlist.
+    /// Añade un vídeo al final de la playlist, reintentando los fallos pasajeros.
     pub async fn add_video(&self, playlist_id: &str, video_id: &str) -> Result<()> {
-        let req = self
-            .http
-            .post(format!("{API}/playlistItems"))
-            .query(&[("part", "snippet")])
-            .json(&json!({
-                "snippet": {
-                    "playlistId": playlist_id,
-                    "resourceId": {"kind": "youtube#video", "videoId": video_id},
-                },
-            }));
-        self.call(req, COST_INSERT).await.map(|_| ())
+        let mut attempt = 0;
+        loop {
+            let req = self
+                .http
+                .post(format!("{API}/playlistItems"))
+                .query(&[("part", "snippet")])
+                .json(&json!({
+                    "snippet": {
+                        "playlistId": playlist_id,
+                        "resourceId": {"kind": "youtube#video", "videoId": video_id},
+                    },
+                }));
+            match self.call(req, COST_INSERT).await {
+                Ok(_) => return Ok(()),
+                Err(e) if attempt < ADD_RETRIES && e.downcast_ref::<ApiError>().is_some_and(ApiError::is_transient) => {
+                    tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    fn err(status: StatusCode, reason: &str) -> ApiError {
+        ApiError {
+            status,
+            reason: Some(reason.into()),
+            message: String::new(),
+        }
+    }
+
+    #[test]
+    fn reintenta_solo_fallos_pasajeros() {
+        assert!(err(StatusCode::CONFLICT, "SERVICE_UNAVAILABLE").is_transient());
+        assert!(err(StatusCode::SERVICE_UNAVAILABLE, "backendError").is_transient());
+        assert!(err(StatusCode::NOT_FOUND, "playlistNotFound").is_transient());
+        assert!(!err(StatusCode::NOT_FOUND, "videoNotFound").is_transient());
+        assert!(!err(StatusCode::FORBIDDEN, "forbidden").is_transient());
     }
 }
