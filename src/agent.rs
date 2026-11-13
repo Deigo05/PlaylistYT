@@ -7,7 +7,7 @@ use crate::llm::LlmClient;
 use crate::quota::{Quota, playlist_cost};
 use crate::ranking::{self, Scored, normalize};
 use crate::youtube::{QuotaExceeded, YouTube};
-use crate::ytdlp::{self, Source};
+use crate::ytdlp::{self, Candidate, Source};
 use anyhow::{Result, bail};
 use serde::Deserialize;
 use serde_json::json;
@@ -144,6 +144,22 @@ pub async fn create_playlist(
                 used.insert(item.video_id.clone());
                 items.push(item);
             }
+        }
+    }
+    if items.len() < req.count as usize {
+        progress(format!("Completando con las canciones más escuchadas de {artist} en YouTube Music…"));
+        let max = (req.count as usize + 15).min(MAX_SONGS as usize);
+        match ytdlp::search(&bin, &artist, Source::Music, max).await {
+            Ok(top) => {
+                let added = fill_with_top_songs(&top, &artist, req.count as usize, &mut items, &mut used);
+                if added > 0 && !missing.is_empty() {
+                    progress(format!(
+                        "Aviso: no están en YouTube ({}); las sustituyo por otras {added} populares.",
+                        missing.join(", ")
+                    ));
+                }
+            }
+            Err(e) => progress(format!("Aviso: {e:#}")),
         }
     }
     if items.is_empty() {
@@ -314,8 +330,42 @@ fn best_by_heuristic(search: &SongSearch, used: &HashSet<String>) -> Option<Play
     search
         .ranked
         .iter()
-        .find(|s| s.score > 0 && !used.contains(&s.candidate.id))
+        .find(|s| s.matches && s.score > 0 && !used.contains(&s.candidate.id))
         .map(|s| to_item(&search.song, s))
+}
+
+/// Completa la lista con las canciones que da YouTube Music al buscar solo el nombre del
+/// artista (salen por popularidad). Hace falta cuando el LLM conoce poco al artista e
+/// inventa títulos. Devuelve cuántas añadió.
+fn fill_with_top_songs(
+    top: &[Candidate],
+    artist: &str,
+    count: usize,
+    items: &mut Vec<PlaylistItem>,
+    used: &mut HashSet<String>,
+) -> usize {
+    let mut titles: HashSet<String> =
+        items.iter().flat_map(|it| [normalize(&it.song), normalize(&it.video_title)]).collect();
+    let before = items.len();
+    for c in top {
+        if items.len() >= count {
+            break;
+        }
+        if used.contains(&c.id) || ranking::is_excluded(c, "") || !titles.insert(normalize(&c.title)) {
+            continue;
+        }
+        used.insert(c.id.clone());
+        items.push(PlaylistItem {
+            song: c.title.clone(),
+            video_id: c.id.clone(),
+            video_title: c.title.clone(),
+            channel: c.channel.clone(),
+            duration_secs: c.duration_secs,
+            kind: ranking::classify(c, artist),
+            file_name: format!("{artist} - {}", c.title),
+        });
+    }
+    items.len() - before
 }
 
 async fn choose_with_llm(
@@ -419,7 +469,6 @@ pub fn format_duration(secs: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ytdlp::Candidate;
 
     fn search(title: &str, ids: &[&str]) -> SongSearch {
         let candidates: Vec<Candidate> = ids
@@ -494,6 +543,77 @@ mod tests {
                 println!("    {:>4}  {} | {:?}", c.score, c.candidate.title, c.candidate.channel);
             }
         }
+    }
+
+    fn music(id: &str, title: &str, rank: usize) -> Candidate {
+        Candidate {
+            id: id.into(),
+            title: title.into(),
+            channel: None,
+            duration_secs: None,
+            views: None,
+            source: Source::Music,
+            rank,
+        }
+    }
+
+    #[test]
+    fn la_heuristica_no_acepta_otra_cancion() {
+        // Si la canción no existe, YouTube Music devuelve otras del artista.
+        let found = vec![music("p", "Passionfruit", 0), music("d", "Dark Beach", 1)];
+        let s = SongSearch {
+            song: Song { title: "Distant".into() },
+            ranked: ranking::rank(&found, "Distant", "PastelGhost"),
+        };
+        assert!(best_by_heuristic(&s, &HashSet::new()).is_none());
+    }
+
+    #[test]
+    fn completa_con_las_canciones_populares_del_artista() {
+        let mut items = vec![to_item(
+            &Song { title: "Dark Beach".into() },
+            &ranking::rank(&[music("d", "Dark Beach", 0)], "Dark Beach", "PastelGhost")[0],
+        )];
+        let mut used: HashSet<String> = ["d".to_string()].into();
+        let top = vec![
+            music("d", "Dark Beach", 0),       // ya está (mismo id)
+            music("d2", "Dark Beach", 1),      // ya está (mismo título)
+            music("l", "Iris (Live)", 2),      // directo
+            music("i", "Iris", 3),
+            music("s", "Silhouette", 4),
+            music("p", "Prism", 5),
+        ];
+        let added = fill_with_top_songs(&top, "PastelGhost", 3, &mut items, &mut used);
+        assert_eq!(added, 2);
+        let ids: Vec<_> = items.iter().map(|it| it.video_id.as_str()).collect();
+        assert_eq!(ids, ["d", "i", "s"]);
+        assert_eq!(items[1].file_name, "PastelGhost - Iris");
+        assert!(used.contains("s"));
+    }
+
+    /// Artista poco conocido con títulos inventados (como los que dio el LLM para PastelGhost):
+    /// no deben colarse otras canciones y los huecos se cubren con las más escuchadas.
+    /// `cargo test completa_artista_poco_conocido -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn completa_artista_poco_conocido_de_verdad() {
+        let artist = "PastelGhost";
+        let songs: Vec<Song> = ["Dark Beach", "Distant", "Not Your Kind"]
+            .iter()
+            .map(|t| Song { title: t.to_string() })
+            .collect();
+        let progress: Progress = Arc::new(|m| println!("{m}"));
+        let searches = search_all("yt-dlp", artist, &songs, &progress).await;
+        let mut used = HashSet::new();
+        let mut items: Vec<PlaylistItem> = searches.iter().filter_map(|s| best_by_heuristic(s, &used)).collect();
+        assert_eq!(items.iter().map(|it| it.video_title.as_str()).collect::<Vec<_>>(), ["Dark Beach"]);
+        used.extend(items.iter().map(|it| it.video_id.clone()));
+        let top = ytdlp::search("yt-dlp", artist, Source::Music, 15).await.unwrap();
+        fill_with_top_songs(&top, artist, 5, &mut items, &mut used);
+        for it in &items {
+            println!("{} [{}]", it.file_name, it.video_id);
+        }
+        assert_eq!(items.len(), 5);
     }
 
     #[test]

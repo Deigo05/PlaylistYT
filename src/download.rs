@@ -112,6 +112,20 @@ fn rename_to_clean(dir: &Path, path: &Path, clean: &str) -> Result<Option<String
     Ok(Some(name))
 }
 
+/// Borra los archivos intermedios de yt-dlp ("<id>.webm", "<id>.webm.part", miniaturas…)
+/// que quedan si una descarga se corta a medias. Devuelve cuántos borró.
+fn remove_leftovers(dir: &Path, video_id: &str) -> usize {
+    let prefix = format!("{video_id}.");
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+                .filter(|e| std::fs::remove_file(e.path()).is_ok())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 /// Descarga las canciones que falten. Devuelve un resumen para la interfaz.
 pub async fn download_playlist(config: &Config, playlist: &PlaylistResult, progress: Progress) -> Result<String> {
     let (bin, base, format) = (config.ytdlp_path.trim(), config.download_dir.as_str(), config.audio_format);
@@ -135,6 +149,8 @@ pub async fn download_playlist(config: &Config, playlist: &PlaylistResult, progr
     let total = playlist.items.len();
     let (mut done, mut skipped, mut renamed, mut failed) = (0, 0, 0, Vec::new());
     for (i, item) in playlist.items.iter().enumerate() {
+        // Restos de una descarga anterior que se cortó (el archivo final ya tiene su nombre limpio).
+        remove_leftovers(&dir, &item.video_id);
         if let Some(path) = manifest.file(&dir, &item.video_id) {
             // Ya descargada: si se bajó con otro nombre (versiones anteriores), se renombra.
             if let Some(name) = rename_to_clean(&dir, &path, &item.clean_name(&playlist.artist))? {
@@ -155,6 +171,7 @@ pub async fn download_playlist(config: &Config, playlist: &PlaylistResult, progr
                 done += 1;
             }
             Err(e) => {
+                remove_leftovers(&dir, &item.video_id);
                 progress(format!("Aviso: no se pudo descargar \"{}\": {e:#}", item.song));
                 failed.push(item.song.clone());
             }
@@ -248,6 +265,20 @@ mod tests {
         // Si ya tiene el nombre correcto no hace nada.
         let again = rename_to_clean(&dir, &dir.join("Vicente Fernández - El Rey.mp3"), "Vicente Fernández - El Rey");
         assert_eq!(again.unwrap(), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn borra_restos_de_descargas_cortadas() {
+        let dir = std::env::temp_dir().join(format!("playlistyt-restos-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["WKZO-CWeOVA.webm", "WKZO-CWeOVA.webm.part", "WKZO-CWeOVA.webp", "WKZO-CWeOVAx.mp3", "Billie Eilish - Song.mp3"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        assert_eq!(remove_leftovers(&dir, "WKZO-CWeOVA"), 3);
+        let mut left: Vec<_> = names_in(&dir).into_iter().collect();
+        left.sort();
+        assert_eq!(left, ["billie eilish - song.mp3", "wkzo-cweovax.mp3"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

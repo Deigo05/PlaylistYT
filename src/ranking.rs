@@ -46,6 +46,8 @@ pub struct Scored {
     pub candidate: Candidate,
     pub score: i32,
     pub kind: SourceKind,
+    /// El título es el de la canción buscada (ver `title_matches`).
+    pub matches: bool,
 }
 
 /// Minúsculas, sin acentos y con la puntuación convertida en espacios.
@@ -86,6 +88,32 @@ fn strip_brackets(title: &str) -> String {
         }
     }
     out
+}
+
+/// Título sin paréntesis ni invitados ("feat. …"), normalizado.
+fn core(title: &str) -> String {
+    let t = normalize(&strip_brackets(title));
+    [" feat ", " ft ", " featuring ", " with "]
+        .iter()
+        .fold(t, |t, sep| format!("{t} ").split(sep).next().unwrap_or_default().trim().to_string())
+}
+
+/// ¿El vídeo es esa canción? Su título, quitando paréntesis, invitados y el nombre del
+/// artista delante o detrás, tiene que ser exactamente el de la canción. Así "Passionfruit"
+/// o "Before You Fade" no pasan por "Distant" o "Fade".
+pub fn title_matches(c: &Candidate, song: &str, artist: &str) -> bool {
+    let song = core(song);
+    let artist = normalize(artist);
+    let mut title = core(&c.title);
+    if !artist.is_empty() {
+        if let Some(rest) = title.strip_prefix(&format!("{artist} ")) {
+            title = rest.to_string();
+        }
+        if let Some(rest) = title.strip_suffix(&format!(" {artist}")) {
+            title = rest.to_string();
+        }
+    }
+    !song.is_empty() && title == song
 }
 
 pub fn is_excluded(c: &Candidate, song: &str) -> bool {
@@ -166,6 +194,7 @@ pub fn rank(candidates: &[Candidate], song: &str, artist: &str) -> Vec<Scored> {
             candidate: c.clone(),
             score: score(c, song, artist),
             kind: classify(c, artist),
+            matches: title_matches(c, song, artist),
         })
         .collect();
     // Orden estable: con la misma puntuación se respeta el orden de búsqueda.
@@ -233,6 +262,19 @@ mod tests {
         let ok = cand("ok", "Bohemian Rhapsody", None, 355, Source::Music, 1);
         let other = cand("no", "The Show Must Go On", None, 263, Source::Music, 0);
         assert!(score(&ok, "Bohemian Rhapsody", "Queen") > score(&other, "Bohemian Rhapsody", "Queen"));
+    }
+
+    #[test]
+    fn reconoce_si_el_titulo_es_la_cancion() {
+        let t = |title: &str| cand("x", title, None, 200, Source::Video, 0);
+        assert!(title_matches(&t("Fade"), "Fade", "PastelGhost"));
+        assert!(title_matches(&t("PastelGhost - Fade (Official Audio)"), "Fade", "PastelGhost"));
+        assert!(title_matches(&t("Fade - PastelGhost"), "Fade", "PastelGhost"));
+        assert!(title_matches(&t("Queen – Bohemian Rhapsody (Remastered 2011)"), "Bohemian Rhapsody", "Queen"));
+        assert!(title_matches(&t("Lovely (with Khalid)"), "lovely", "Billie Eilish"));
+        // Otra canción que solo comparte una palabra, o ninguna.
+        assert!(!title_matches(&t("Before You Fade"), "Fade", "PastelGhost"));
+        assert!(!title_matches(&t("Passionfruit"), "Distant", "PastelGhost"));
     }
 
     #[test]
