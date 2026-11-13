@@ -46,7 +46,7 @@ pub struct PlaylistApp {
     confirm_delete: Option<String>,
     /// Playlist (id) que se está borrando.
     deleting: Option<String>,
-    /// Descarga o limpieza de nombres en curso: (id de la playlist, texto a mostrar).
+    /// Descarga en curso: (id de la playlist, texto a mostrar).
     files_task: Option<(String, &'static str)>,
     /// Versión de ffmpeg o motivo por el que no está disponible.
     ffmpeg_status: Option<Result<String, String>>,
@@ -55,7 +55,6 @@ pub struct PlaylistApp {
 
 enum FilesAction {
     Download,
-    CleanNames,
     OpenFolder,
 }
 
@@ -409,7 +408,7 @@ impl PlaylistApp {
                     let format = self.config.audio_format;
                     let has_ffmpeg = matches!(self.ffmpeg_status, Some(Ok(_)));
                     let resp = ui.add_enabled(
-                        !busy && downloaded < p.items.len() && (has_ffmpeg || !format.needs_ffmpeg()),
+                        !busy && (has_ffmpeg || !format.needs_ffmpeg()),
                         egui::Button::new(format!("Descargar en {}", format.extension().to_uppercase())),
                     );
                     let hover = if format.needs_ffmpeg() && !has_ffmpeg {
@@ -419,17 +418,8 @@ impl PlaylistApp {
                     } else {
                         format!("{}. Sin ffmpeg no lleva carátula ni etiquetas.", format.label())
                     };
-                    if resp.on_hover_text(&hover).on_disabled_hover_text(&hover).clicked()
-                    {
+                    if resp.on_hover_text(&hover).on_disabled_hover_text(&hover).clicked() {
                         files_action = Some(FilesAction::Download);
-                    }
-                    let llm_ready = !self.config.llm.provider.needs_api_key() || !self.api_key.trim().is_empty();
-                    if ui
-                        .add_enabled(!busy && downloaded > 0 && llm_ready, egui::Button::new("Limpiar nombres con IA"))
-                        .on_hover_text("Renombra los archivos a \"Cantante - Canción\"")
-                        .clicked()
-                    {
-                        files_action = Some(FilesAction::CleanNames);
                     }
                 }
             }
@@ -445,13 +435,6 @@ impl PlaylistApp {
                 self.error = None;
                 self.files_task = Some((p.playlist_id.clone(), "Descargando…"));
                 self.worker.send(Command::Download(self.config.clone(), p.clone()));
-            }
-            Some(FilesAction::CleanNames) => {
-                self.progress.clear();
-                self.error = None;
-                self.files_task = Some((p.playlist_id.clone(), "Limpiando nombres…"));
-                self.worker
-                    .send(Command::CleanNames(self.config.clone(), self.api_key.clone(), p.clone()));
             }
             Some(FilesAction::OpenFolder) => {
                 let opened = std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|_| open::that(&dir).map_err(|e| e.to_string()));

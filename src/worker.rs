@@ -5,7 +5,6 @@ use crate::agent::{self, Request};
 use crate::config::Config;
 use crate::{download, ffmpeg, updates};
 use crate::history::PlaylistResult;
-use crate::llm::LlmClient;
 use crate::quota::Quota;
 use crate::youtube::YouTube;
 use crate::ytdlp;
@@ -26,8 +25,6 @@ pub enum Command {
     UpdateFfmpeg(String),
     /// Descarga con yt-dlp el audio de la playlist.
     Download(Config, PlaylistResult),
-    /// Renombra con el LLM los archivos descargados de la playlist.
-    CleanNames(Config, String, PlaylistResult),
 }
 
 pub enum Event {
@@ -41,7 +38,7 @@ pub enum Event {
     /// Versión de ffmpeg encontrada, o por qué no se encontró.
     FfmpegFound(Result<String, String>),
     FfmpegUpdated(Result<String, String>),
-    /// Fin de una descarga o de una limpieza de nombres.
+    /// Fin de una descarga.
     FilesTaskDone(Result<String, String>),
     YoutubeConnected(Result<String, String>),
     YtdlpVersion(Result<String, String>),
@@ -142,16 +139,6 @@ async fn handle(cmd: Command, quota: Arc<Mutex<Quota>>, emit: Arc<impl Fn(Event)
             let result = download::download_playlist(&config, &playlist, progress)
                 .await
                 .map_err(|e| format!("{e:#}"));
-            emit(Event::FilesTaskDone(result));
-        }
-        Command::CleanNames(config, api_key, playlist) => {
-            let progress = progress_for(&emit);
-            let result = async {
-                let llm = LlmClient::new(config.llm.clone(), api_key)?;
-                download::clean_names(&llm, &playlist, &config.download_dir, progress).await
-            }
-            .await
-            .map_err(|e| format!("{e:#}"));
             emit(Event::FilesTaskDone(result));
         }
     }

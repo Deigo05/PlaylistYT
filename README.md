@@ -73,15 +73,14 @@ En modo de prueba Google caduca el permiso cada 7 días; cuando pase, la app vue
 ### 6. Crear una playlist
 Escribe el cantante, elige el número de canciones (1–50) y pulsa **Crear playlist**. Al terminar verás el link (con botón de copiar) y la tabla de canciones con su tipo: audio original, audio oficial o vídeo oficial. Las playlists anteriores quedan en el historial de la izquierda.
 
-### 7. Descargar el audio y ordenar los nombres
+### 7. Descargar el audio
 Descarga solo música sobre la que tengas derechos.
 
 1. En **Ajustes** elige la **carpeta de descargas** (por defecto `Música\PlaylistYT`; cada playlist va a su propia subcarpeta) y el **formato**:
    - **MP3** (por defecto): el formato más compatible (radios de coche, reproductores antiguos, USB). Se convierte a VBR de alta calidad (~245 kbps); convertir no mejora el sonido, solo la compatibilidad. Necesita ffmpeg.
    - **M4A (AAC)**: la pista de audio tal como la sirve YouTube, sin conversión. Suena en móviles, PC, Apple Music y la mayoría de reproductores.
-2. Pulsa **Descargar en MP3** (o M4A). Cada archivo se guarda directamente como `Cantante - Canción`, por ejemplo `Tom Odell - Half As Good As You (feat. Alice Merton).mp3`: el agente decide ese nombre al crear la playlist. Con ffmpeg lleva además la carátula del álbum y sus etiquetas. Si se corta, al volver a pulsar solo descarga las que falten.
-3. **Limpiar nombres con IA** sirve para carpetas descargadas con versiones anteriores de la app: el LLM las renombra al mismo formato.
-4. **Abrir carpeta** te lleva directamente a los archivos.
+2. Pulsa **Descargar en MP3** (o M4A). Cada archivo se guarda directamente como `Cantante - Canción`, por ejemplo `Tom Odell - Half As Good As You (feat. Alice Merton).mp3`: el agente decide ese nombre al crear la playlist. Con ffmpeg lleva además la carátula del álbum y sus etiquetas. Si se corta, al volver a pulsar solo descarga las que falten (y renombra al mismo formato las que se bajaron con versiones anteriores de la app).
+3. **Abrir carpeta** te lleva directamente a los archivos.
 
 ### 8. Borrar una playlist
 Selecciónala en el historial y pulsa **Borrar playlist** junto al link. Tras confirmar, se borra de tu cuenta de YouTube y del historial (cuesta 50 unidades; no se puede deshacer). Si ya la habías borrado a mano en YouTube, la app solo la quita del historial.

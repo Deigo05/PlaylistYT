@@ -1,5 +1,5 @@
-//! Descarga con yt-dlp del audio de una playlist creada por la app y limpieza de los
-//! nombres de archivo con el LLM ("{cantante} - {canción}").
+//! Descarga con yt-dlp del audio de una playlist creada por la app. Cada archivo se guarda
+//! como "{cantante} - {canción}", el nombre que el agente decidió al crear la playlist.
 //!
 //! Cada playlist va a su propia carpeta. Un manifiesto (`.playlistyt.json`) recuerda qué
 //! archivo corresponde a cada vídeo, para no repetir descargas y poder renombrar.
@@ -7,11 +7,9 @@
 use crate::agent::Progress;
 use crate::config::Config;
 use crate::history::{PlaylistItem, PlaylistResult};
-use crate::llm::LlmClient;
 use crate::{ffmpeg, ytdlp};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -100,6 +98,20 @@ fn extension(path: &Path) -> String {
     path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// Renombra `path` a `clean` (saneado, sin pisar otros archivos) conservando la extensión.
+/// Devuelve el nombre nuevo, o `None` si ya se llamaba así.
+fn rename_to_clean(dir: &Path, path: &Path, clean: &str) -> Result<Option<String>> {
+    let current = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let mut taken = names_in(dir);
+    taken.remove(&current.to_lowercase());
+    let name = unique_name(&sanitize_file_name(clean), &extension(path), &taken);
+    if name == current {
+        return Ok(None);
+    }
+    std::fs::rename(path, dir.join(&name)).with_context(|| format!("no se pudo renombrar \"{current}\""))?;
+    Ok(Some(name))
+}
+
 /// Descarga las canciones que falten. Devuelve un resumen para la interfaz.
 pub async fn download_playlist(config: &Config, playlist: &PlaylistResult, progress: Progress) -> Result<String> {
     let (bin, base, format) = (config.ytdlp_path.trim(), config.download_dir.as_str(), config.audio_format);
@@ -121,20 +133,23 @@ pub async fn download_playlist(config: &Config, playlist: &PlaylistResult, progr
     let mut manifest = Manifest::load(&dir);
 
     let total = playlist.items.len();
-    let (mut done, mut skipped, mut failed) = (0, 0, Vec::new());
+    let (mut done, mut skipped, mut renamed, mut failed) = (0, 0, 0, Vec::new());
     for (i, item) in playlist.items.iter().enumerate() {
-        if manifest.file(&dir, &item.video_id).is_some() {
+        if let Some(path) = manifest.file(&dir, &item.video_id) {
+            // Ya descargada: si se bajó con otro nombre (versiones anteriores), se renombra.
+            if let Some(name) = rename_to_clean(&dir, &path, &item.clean_name(&playlist.artist))? {
+                manifest.files.insert(item.video_id.clone(), name);
+                manifest.save(&dir)?;
+                renamed += 1;
+            }
             skipped += 1;
             continue;
         }
         progress(format!("Descargando {}/{total}: {}", i + 1, item.song));
         match ytdlp::download_audio(bin, &item.video_id, &dir, format, ffmpeg.as_deref()).await {
             Ok(path) => {
-                let mut taken = names_in(&dir);
-                taken.remove(&path.file_name().unwrap_or_default().to_string_lossy().to_lowercase());
-                let stem = sanitize_file_name(&item.clean_name(&playlist.artist));
-                let name = unique_name(&stem, &extension(&path), &taken);
-                std::fs::rename(&path, dir.join(&name)).context("no se pudo renombrar la descarga")?;
+                let name = rename_to_clean(&dir, &path, &item.clean_name(&playlist.artist))?
+                    .unwrap_or_else(|| path.file_name().unwrap_or_default().to_string_lossy().into_owned());
                 manifest.files.insert(item.video_id.clone(), name);
                 manifest.save(&dir)?;
                 done += 1;
@@ -150,105 +165,13 @@ pub async fn download_playlist(config: &Config, playlist: &PlaylistResult, progr
     if skipped > 0 {
         summary.push_str(&format!(", {skipped} ya estaban"));
     }
+    if renamed > 0 {
+        summary.push_str(&format!(" ({renamed} renombradas a \"Cantante - Canción\")"));
+    }
     if !failed.is_empty() {
         summary.push_str(&format!(", fallaron {}: {}", failed.len(), failed.join(", ")));
     }
     summary.push('.');
-    progress(summary.clone());
-    Ok(summary)
-}
-
-#[derive(Deserialize)]
-struct CleanNames {
-    names: Vec<CleanName>,
-}
-
-#[derive(Deserialize)]
-struct CleanName {
-    index: usize,
-    name: String,
-}
-
-/// Renombra los archivos descargados a "{cantante} - {canción}" con ayuda del LLM.
-pub async fn clean_names(llm: &LlmClient, playlist: &PlaylistResult, base: &str, progress: Progress) -> Result<String> {
-    let dir = playlist_dir(base, playlist);
-    let mut manifest = Manifest::load(&dir);
-    let files: Vec<(&PlaylistItem, PathBuf)> = playlist
-        .items
-        .iter()
-        .filter_map(|it| Some((it, manifest.file(&dir, &it.video_id)?)))
-        .collect();
-    if files.is_empty() {
-        bail!("No hay canciones descargadas de esta playlist. Descárgalas primero.");
-    }
-
-    progress(format!("Pidiendo a {} nombres limpios para {} archivos…", llm.provider_label(), files.len()));
-    let mut listing = String::new();
-    for (i, (item, path)) in files.iter().enumerate() {
-        listing.push_str(&format!(
-            "{i}. archivo=\"{}\" | título del vídeo=\"{}\" | canción=\"{}\"\n",
-            path.file_stem().unwrap_or_default().to_string_lossy(),
-            item.video_title,
-            item.song,
-        ));
-    }
-    let schema = json!({
-        "type": "object",
-        "properties": {
-            "names": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "index": {"type": "integer"},
-                        "name": {"type": "string"}
-                    },
-                    "required": ["index", "name"],
-                    "additionalProperties": false
-                }
-            }
-        },
-        "required": ["names"],
-        "additionalProperties": false
-    });
-    let system = "Eres un bibliotecario musical que ordena colecciones de archivos de audio.";
-    let user = format!(
-        "Artista de la playlist: {artist}\n\n\
-         Para cada archivo, escribe un nombre limpio con el formato \"{{cantante}} - {{canción}}\", sin extensión.\n\
-         - El cantante es el artista principal, bien escrito.\n\
-         - Quita añadidos como (Official Audio), (Official Video), (Lyrics), HD, [id] o \"Remastered\".\n\
-         - Conserva los artistas invitados al final: \"Canción (feat. Otro)\".\n\
-         - Usa las mayúsculas del título oficial. No uses los caracteres < > : \" / \\ | ? *\n\n\
-         {listing}\n\
-         Responde en json: {{\"names\": [{{\"index\": 0, \"name\": \"{artist} - Canción\"}}]}}",
-        artist = playlist.artist,
-    );
-    let value = llm.chat_json(system, &user, &schema).await?;
-    let answer: CleanNames = serde_json::from_value(value).context("el LLM devolvió un formato inesperado")?;
-
-    let mut taken = names_in(&dir);
-    let mut renamed = 0;
-    for (i, (item, path)) in files.iter().enumerate() {
-        let proposed = answer
-            .names
-            .iter()
-            .find(|n| n.index == i)
-            .map(|n| n.name.trim().to_string())
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| item.clean_name(&playlist.artist));
-        let current = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        taken.remove(&current.to_lowercase());
-        let name = unique_name(&sanitize_file_name(&proposed), &extension(path), &taken);
-        taken.insert(name.to_lowercase());
-        if name == current {
-            continue;
-        }
-        std::fs::rename(path, dir.join(&name)).with_context(|| format!("no se pudo renombrar \"{current}\""))?;
-        manifest.files.insert(item.video_id.clone(), name);
-        renamed += 1;
-    }
-    manifest.save(&dir)?;
-    let summary = format!("Nombres limpios: {renamed} archivo(s) renombrado(s).");
     progress(summary.clone());
     Ok(summary)
 }
@@ -311,6 +234,21 @@ mod tests {
             assert!(summary.contains("1 ya estaban"), "{summary}");
         }
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn renombra_descargas_antiguas() {
+        let dir = std::env::temp_dir().join(format!("playlistyt-ren-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("El Rey (Official Audio).mp3");
+        std::fs::write(&old, b"x").unwrap();
+        let name = rename_to_clean(&dir, &old, "Vicente Fernández - El Rey").unwrap();
+        assert_eq!(name.as_deref(), Some("Vicente Fernández - El Rey.mp3"));
+        assert!(dir.join("Vicente Fernández - El Rey.mp3").is_file());
+        // Si ya tiene el nombre correcto no hace nada.
+        let again = rename_to_clean(&dir, &dir.join("Vicente Fernández - El Rey.mp3"), "Vicente Fernández - El Rey");
+        assert_eq!(again.unwrap(), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
