@@ -45,7 +45,7 @@ pub fn add_winget_links_to_path() {
 }
 
 /// Busca un ejecutable en el PATH como lo haría la consola.
-fn which(bin: &str) -> Option<PathBuf> {
+pub fn which(bin: &str) -> Option<PathBuf> {
     let path = Path::new(bin);
     if path.components().count() > 1 {
         return path.is_file().then(|| path.to_path_buf());

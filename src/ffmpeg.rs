@@ -31,6 +31,8 @@ pub async fn find(configured: &str) -> Result<Ffmpeg> {
             .and_then(|l| l.split_whitespace().nth(2))
             .unwrap_or("?")
             .to_string();
+        // yt-dlp no busca en el PATH lo que recibe en --ffmpeg-location: hay que darle la ruta completa.
+        let path = crate::updates::which(&path.to_string_lossy()).unwrap_or(path);
         return Ok(Ffmpeg { path, version });
     }
     if configured.is_empty() {
@@ -55,4 +57,17 @@ fn winget_candidates() -> Vec<PathBuf> {
     found.sort();
     found.reverse();
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// yt-dlp no busca en el PATH lo que recibe en --ffmpeg-location: necesita la ruta completa.
+    #[tokio::test]
+    async fn devuelve_la_ruta_completa() {
+        let Ok(found) = find("").await else { return }; // sin ffmpeg instalado no hay nada que probar
+        assert!(found.path.is_absolute(), "{}", found.path.display());
+        assert!(found.path.is_file(), "{}", found.path.display());
+    }
 }
