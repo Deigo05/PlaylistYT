@@ -34,11 +34,25 @@ pub struct PlaylistItem {
     pub channel: Option<String>,
     pub duration_secs: Option<u32>,
     pub kind: SourceKind,
+    /// Nombre limpio "Cantante - Canción" que se usa al descargar (sin extensión).
+    /// Vacío en playlists creadas con versiones antiguas de la app.
+    #[serde(default)]
+    pub file_name: String,
 }
 
 impl PlaylistItem {
     pub fn url(&self) -> String {
         format!("https://www.youtube.com/watch?v={}", self.video_id)
+    }
+
+    /// "Cantante - Canción": el nombre guardado o, si no hay, uno construido con la lista.
+    pub fn clean_name(&self, artist: &str) -> String {
+        let name = self.file_name.trim();
+        if name.is_empty() {
+            format!("{artist} - {}", self.song)
+        } else {
+            name.to_string()
+        }
     }
 }
 

@@ -130,10 +130,10 @@ pub async fn download_playlist(config: &Config, playlist: &PlaylistResult, progr
         progress(format!("Descargando {}/{total}: {}", i + 1, item.song));
         match ytdlp::download_audio(bin, &item.video_id, &dir, format, ffmpeg.as_deref()).await {
             Ok(path) => {
-                // Nombre provisional legible; "Limpiar nombres" lo deja en "{cantante} - {canción}".
                 let mut taken = names_in(&dir);
                 taken.remove(&path.file_name().unwrap_or_default().to_string_lossy().to_lowercase());
-                let name = unique_name(&sanitize_file_name(&item.video_title), &extension(&path), &taken);
+                let stem = sanitize_file_name(&item.clean_name(&playlist.artist));
+                let name = unique_name(&stem, &extension(&path), &taken);
                 std::fs::rename(&path, dir.join(&name)).context("no se pudo renombrar la descarga")?;
                 manifest.files.insert(item.video_id.clone(), name);
                 manifest.save(&dir)?;
@@ -235,7 +235,7 @@ pub async fn clean_names(llm: &LlmClient, playlist: &PlaylistResult, base: &str,
             .find(|n| n.index == i)
             .map(|n| n.name.trim().to_string())
             .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| format!("{} - {}", playlist.artist, item.song));
+            .unwrap_or_else(|| item.clean_name(&playlist.artist));
         let current = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
         taken.remove(&current.to_lowercase());
         let name = unique_name(&sanitize_file_name(&proposed), &extension(path), &taken);
@@ -289,6 +289,7 @@ mod tests {
                 channel: None,
                 duration_secs: None,
                 kind: SourceKind::AudioOriginal,
+                file_name: "Vicente Fernández - El Rey".into(),
             }],
             missing: vec![],
         };
@@ -301,7 +302,7 @@ mod tests {
             };
             download_playlist(&config, &playlist, progress.clone()).await.unwrap();
             let dir = playlist_dir(&config.download_dir, &playlist);
-            let file = dir.join(format!("El Rey.{}", format.extension()));
+            let file = dir.join(format!("Vicente Fernández - El Rey.{}", format.extension()));
             assert!(file.is_file(), "falta {}", file.display());
             println!("{} -> {} bytes", file.display(), std::fs::metadata(&file).unwrap().len());
             assert_eq!(Manifest::load(&dir).downloaded(&dir, &playlist.items), 1);

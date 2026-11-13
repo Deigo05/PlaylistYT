@@ -145,15 +145,18 @@ impl PlaylistApp {
                     self.ytdlp_status = Some(result);
                 }
                 Event::YtdlpUpdated(result) => {
-                    self.ytdlp_busy = false;
                     match result {
-                        Ok(msg) => {
-                            self.progress.push(format!("yt-dlp: {msg}"));
-                            self.ytdlp_busy = true;
-                            self.worker.send(Command::CheckYtdlp(self.config.ytdlp_path.clone()));
-                        }
-                        Err(msg) => self.ytdlp_status = Some(Err(msg)),
+                        Ok(msg) => self.progress.push(msg),
+                        Err(msg) => self.error = Some(format!("No se pudo actualizar yt-dlp: {msg}")),
                     }
+                    self.worker.send(Command::CheckYtdlp(self.config.ytdlp_path.clone()));
+                }
+                Event::FfmpegUpdated(result) => {
+                    match result {
+                        Ok(msg) => self.progress.push(msg),
+                        Err(msg) => self.error = Some(format!("No se pudo actualizar ffmpeg: {msg}")),
+                    }
+                    self.worker.send(Command::CheckFfmpeg(self.config.ffmpeg_path.clone()));
                 }
             }
         }
@@ -547,6 +550,7 @@ impl PlaylistApp {
         let mut update_ytdlp = false;
         let mut connect_youtube = false;
         let mut check_ffmpeg = false;
+        let mut update_ffmpeg = false;
 
         egui::Window::new("Ajustes")
             .open(&mut open)
@@ -603,7 +607,12 @@ impl PlaylistApp {
                     if ui.add_enabled(!self.ytdlp_busy, egui::Button::new("Comprobar")).clicked() {
                         check_ytdlp = true;
                     }
-                    if ui.add_enabled(!self.ytdlp_busy, egui::Button::new("Actualizar yt-dlp")).clicked() {
+                    let idle = !self.ytdlp_busy && !self.running && self.files_task.is_none();
+                    if ui
+                        .add_enabled(idle, egui::Button::new("Actualizar yt-dlp"))
+                        .on_hover_text("Usa pip, winget o yt-dlp -U según cómo esté instalado")
+                        .clicked()
+                    {
                         update_ytdlp = true;
                     }
                 });
@@ -650,6 +659,14 @@ impl PlaylistApp {
                     );
                     if ui.add_enabled(!self.ffmpeg_busy, egui::Button::new("Comprobar")).clicked() {
                         check_ffmpeg = true;
+                    }
+                    let label = if has_ffmpeg { "Actualizar ffmpeg" } else { "Instalar ffmpeg" };
+                    if ui
+                        .add_enabled(!self.ffmpeg_busy && self.files_task.is_none(), egui::Button::new(label))
+                        .on_hover_text("Usa winget (paquete Gyan.FFmpeg)")
+                        .clicked()
+                    {
+                        update_ffmpeg = true;
                     }
                 });
                 match &self.ffmpeg_status {
@@ -725,9 +742,10 @@ impl PlaylistApp {
                 Command::CheckYtdlp(bin)
             });
         }
-        if check_ffmpeg {
+        if check_ffmpeg || update_ffmpeg {
             self.ffmpeg_busy = true;
-            self.worker.send(Command::CheckFfmpeg(draft.config.ffmpeg_path.clone()));
+            let path = draft.config.ffmpeg_path.clone();
+            self.worker.send(if update_ffmpeg { Command::UpdateFfmpeg(path) } else { Command::CheckFfmpeg(path) });
         }
         if connect_youtube {
             self.youtube_busy = true;

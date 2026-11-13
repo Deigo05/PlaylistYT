@@ -25,11 +25,12 @@ Necesitas tres cosas: **una API key de un LLM**, **yt-dlp** y **un cliente OAuth
   ```
   winget install yt-dlp
   ```
-  Mantenlo al día: si YouTube cambia algo, las búsquedas o descargas fallan (por ejemplo con "HTTP Error 403"). Actualiza con `winget upgrade yt-dlp` o, si lo instalaste con pip, `python -m pip install -U "yt-dlp[default]"`.
-- **ffmpeg** (opcional, recomendado): permite descargar en MP3 y añade carátula y etiquetas (artista, álbum, año) a los archivos.
+- **ffmpeg** (necesario para MP3, el formato por defecto): convierte el audio y añade carátula y etiquetas (artista, álbum, año). Puedes instalarlo desde la propia app (**Ajustes → Instalar ffmpeg**) o con:
   ```
   winget install Gyan.FFmpeg
   ```
+
+**Mantén las dos herramientas al día.** Cuando YouTube cambia algo, las búsquedas o descargas fallan (por ejemplo con "HTTP Error 403"). En **Ajustes** están los botones **Actualizar yt-dlp** (usa pip, winget o `yt-dlp -U`, según cómo lo instalaste) y **Actualizar ffmpeg** (winget).
 
 ### 2. Compilar y abrir la app
 ```
@@ -76,10 +77,10 @@ Escribe el cantante, elige el número de canciones (1–50) y pulsa **Crear play
 Descarga solo música sobre la que tengas derechos.
 
 1. En **Ajustes** elige la **carpeta de descargas** (por defecto `Música\PlaylistYT`; cada playlist va a su propia subcarpeta) y el **formato**:
-   - **M4A (AAC)**: la pista de audio tal como la sirve YouTube, sin pérdida extra. Suena en móviles, PC, iTunes/Apple Music y la mayoría de reproductores.
-   - **MP3**: el formato más compatible (radios de coche, reproductores antiguos, USB). Se convierte a VBR de alta calidad (~245 kbps); convertir no mejora el sonido, solo la compatibilidad. Necesita ffmpeg.
-2. Pulsa **Descargar en M4A/MP3**. Con ffmpeg, cada archivo lleva la carátula del álbum y sus etiquetas. Si se corta, al volver a pulsar solo descarga las que falten.
-3. Pulsa **Limpiar nombres con IA**. El LLM renombra los archivos a `Cantante - Canción` (por ejemplo `Tom Odell - Half As Good As You (feat. Alice Merton).m4a`).
+   - **MP3** (por defecto): el formato más compatible (radios de coche, reproductores antiguos, USB). Se convierte a VBR de alta calidad (~245 kbps); convertir no mejora el sonido, solo la compatibilidad. Necesita ffmpeg.
+   - **M4A (AAC)**: la pista de audio tal como la sirve YouTube, sin conversión. Suena en móviles, PC, Apple Music y la mayoría de reproductores.
+2. Pulsa **Descargar en MP3** (o M4A). Cada archivo se guarda directamente como `Cantante - Canción`, por ejemplo `Tom Odell - Half As Good As You (feat. Alice Merton).mp3`: el agente decide ese nombre al crear la playlist. Con ffmpeg lleva además la carátula del álbum y sus etiquetas. Si se corta, al volver a pulsar solo descarga las que falten.
+3. **Limpiar nombres con IA** sirve para carpetas descargadas con versiones anteriores de la app: el LLM las renombra al mismo formato.
 4. **Abrir carpeta** te lleva directamente a los archivos.
 
 ### 8. Borrar una playlist

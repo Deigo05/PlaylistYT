@@ -98,15 +98,15 @@ pub struct Config {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum AudioFormat {
-    /// AAC tal como lo sirve YouTube. Sin ffmpeg se guarda sin carátula ni etiquetas.
+    /// MP3 VBR de alta calidad: el más compatible. Necesita ffmpeg.
     #[default]
-    M4a,
-    /// MP3 VBR de alta calidad. Necesita ffmpeg.
     Mp3,
+    /// AAC tal como lo sirve YouTube. Sin ffmpeg se guarda sin carátula ni etiquetas.
+    M4a,
 }
 
 impl AudioFormat {
-    pub const ALL: [AudioFormat; 2] = [AudioFormat::M4a, AudioFormat::Mp3];
+    pub const ALL: [AudioFormat; 2] = [AudioFormat::Mp3, AudioFormat::M4a];
 
     pub fn label(self) -> &'static str {
         match self {

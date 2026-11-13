@@ -3,7 +3,7 @@
 
 use crate::agent::{self, Request};
 use crate::config::Config;
-use crate::{download, ffmpeg};
+use crate::{download, ffmpeg, updates};
 use crate::history::PlaylistResult;
 use crate::llm::LlmClient;
 use crate::quota::Quota;
@@ -22,6 +22,8 @@ pub enum Command {
     DeletePlaylist(Config, String),
     /// Busca ffmpeg (ruta configurada o vacía para buscarlo).
     CheckFfmpeg(String),
+    /// Actualiza (o instala) ffmpeg con winget.
+    UpdateFfmpeg(String),
     /// Descarga con yt-dlp el audio de la playlist.
     Download(Config, PlaylistResult),
     /// Renombra con el LLM los archivos descargados de la playlist.
@@ -38,6 +40,7 @@ pub enum Event {
     },
     /// Versión de ffmpeg encontrada, o por qué no se encontró.
     FfmpegFound(Result<String, String>),
+    FfmpegUpdated(Result<String, String>),
     /// Fin de una descarga o de una limpieza de nombres.
     FilesTaskDone(Result<String, String>),
     YoutubeConnected(Result<String, String>),
@@ -116,7 +119,7 @@ async fn handle(cmd: Command, quota: Arc<Mutex<Quota>>, emit: Arc<impl Fn(Event)
             emit(Event::YtdlpVersion(ytdlp::version(&bin).await.map_err(|e| format!("{e:#}"))));
         }
         Command::UpdateYtdlp(bin) => {
-            emit(Event::YtdlpUpdated(ytdlp::update(&bin).await.map_err(|e| format!("{e:#}"))));
+            emit(Event::YtdlpUpdated(updates::update_ytdlp(&bin).await.map_err(|e| format!("{e:#}"))));
         }
         Command::DeletePlaylist(config, playlist_id) => {
             let result = async {
@@ -130,6 +133,9 @@ async fn handle(cmd: Command, quota: Arc<Mutex<Quota>>, emit: Arc<impl Fn(Event)
         Command::CheckFfmpeg(path) => {
             let result = ffmpeg::find(&path).await.map(|f| f.version).map_err(|e| format!("{e:#}"));
             emit(Event::FfmpegFound(result));
+        }
+        Command::UpdateFfmpeg(path) => {
+            emit(Event::FfmpegUpdated(updates::update_ffmpeg(&path).await.map_err(|e| format!("{e:#}"))));
         }
         Command::Download(config, playlist) => {
             let progress = progress_for(&emit);

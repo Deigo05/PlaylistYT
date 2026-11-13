@@ -50,6 +50,9 @@ struct Picks {
 struct Pick {
     song_index: usize,
     video_id: String,
+    /// Nombre limpio "Cantante - Canción" según el vídeo elegido.
+    #[serde(default)]
+    name: String,
 }
 
 struct SongSearch {
@@ -145,6 +148,10 @@ pub async fn create_playlist(
     }
     if items.is_empty() {
         bail!("No se encontró ninguna canción de {artist} en YouTube.");
+    }
+    // Las que no tienen nombre del LLM (reservas, heurística) usan "Cantante - Canción".
+    for item in items.iter_mut().filter(|it| it.file_name.trim().is_empty()) {
+        item.file_name = format!("{artist} - {}", item.song);
     }
 
     // 6. Crear la playlist
@@ -299,6 +306,7 @@ fn to_item(song: &Song, s: &Scored) -> PlaylistItem {
         channel: s.candidate.channel.clone(),
         duration_secs: s.candidate.duration_secs,
         kind: s.kind,
+        file_name: String::new(),
     }
 }
 
@@ -350,9 +358,10 @@ async fn choose_with_llm(
                     "properties": {
                         "song_index": {"type": "integer"},
                         "video_id": {"type": "string"},
+                        "name": {"type": "string"},
                         "reason": {"type": "string"}
                     },
-                    "required": ["song_index", "video_id", "reason"],
+                    "required": ["song_index", "video_id", "name", "reason"],
                     "additionalProperties": false
                 }
             }
@@ -369,8 +378,11 @@ async fn choose_with_llm(
          2. Preferir la pista de audio (YouTube Music o canal \"Artista - Topic\") o un \"Official Audio\" antes que el videoclip.\n\
          3. Si solo hay videoclip oficial, elegirlo. Si ningún candidato es la canción correcta, deja video_id vacío (\"\").\n\
          La puntuación es una heurística orientativa; usa tu criterio.\n\
+         En \"name\" escribe el nombre limpio de la canción elegida con el formato \"{{cantante}} - {{canción}}\": \
+         artista principal bien escrito, título oficial sin añadidos como (Official Audio), (Lyrics) o Remastered, \
+         y los invitados al final como \"(feat. Otro)\". Sin los caracteres < > : \" / \\ | ? *\n\
          {listing}\n\
-         Responde en json: {{\"picks\": [{{\"song_index\": 0, \"video_id\": \"...\", \"reason\": \"...\"}}]}}"
+         Responde en json: {{\"picks\": [{{\"song_index\": 0, \"video_id\": \"...\", \"name\": \"{artist} - Canción\", \"reason\": \"...\"}}]}}"
     );
     let value = llm.chat_json(system, &user, &schema).await?;
     let picks: Picks = serde_json::from_value(value)?;
@@ -387,12 +399,13 @@ fn apply_picks(searches: &[SongSearch], picks: &Picks) -> Vec<Option<PlaylistIte
             let pick = picks.picks.iter().find(|p| p.song_index == i);
             match pick {
                 Some(p) if p.video_id.trim().is_empty() => None,
-                Some(p) => search
-                    .ranked
-                    .iter()
-                    .find(|s| s.candidate.id == p.video_id.trim())
-                    .map(|s| to_item(&search.song, s))
-                    .or_else(|| best_by_heuristic(search, &HashSet::new())),
+                Some(p) => match search.ranked.iter().find(|s| s.candidate.id == p.video_id.trim()) {
+                    Some(s) => Some(PlaylistItem {
+                        file_name: p.name.trim().to_string(),
+                        ..to_item(&search.song, s)
+                    }),
+                    None => best_by_heuristic(search, &HashSet::new()),
+                },
                 None => best_by_heuristic(search, &HashSet::new()),
             }
         })
@@ -432,7 +445,11 @@ mod tests {
         Picks {
             picks: list
                 .iter()
-                .map(|(i, id)| Pick { song_index: *i, video_id: id.to_string() })
+                .map(|(i, id)| Pick {
+                    song_index: *i,
+                    video_id: id.to_string(),
+                    name: format!("Artista - Canción {i}"),
+                })
                 .collect(),
         }
     }
@@ -442,6 +459,7 @@ mod tests {
         let s = vec![search("Uno", &["a1", "a2"])];
         let r = apply_picks(&s, &picks(&[(0, "a2")]));
         assert_eq!(r[0].as_ref().unwrap().video_id, "a2");
+        assert_eq!(r[0].as_ref().unwrap().file_name, "Artista - Canción 0");
     }
 
     #[test]

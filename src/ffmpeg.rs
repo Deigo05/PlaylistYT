@@ -44,11 +44,15 @@ fn winget_candidates() -> Vec<PathBuf> {
         return Vec::new();
     };
     let Ok(entries) = std::fs::read_dir(packages) else { return Vec::new() };
-    entries
+    let mut found: Vec<PathBuf> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("Gyan.FFmpeg")))
         .filter_map(|pkg| std::fs::read_dir(pkg).ok())
         .flat_map(|builds| builds.filter_map(|e| e.ok().map(|e| e.path().join("bin").join("ffmpeg.exe"))))
         .filter(|exe| exe.is_file())
-        .collect()
+        .collect();
+    // La versión más reciente primero ("ffmpeg-9.0.3-full_build" > "ffmpeg-9.0.2-full_build").
+    found.sort();
+    found.reverse();
+    found
 }
