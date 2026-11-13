@@ -1,0 +1,13 @@
+/target
+
+# Credenciales: nunca deben subirse al repositorio.
+client_secret*.json
+*_tokens.json
+youtube_tokens.json
+.env
+.env.*
+
+# Datos locales de la app (normalmente viven en %APPDATA%\PlaylistYT).
+config.toml
+quota.json
+history.json
