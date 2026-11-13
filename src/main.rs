@@ -16,6 +16,7 @@ mod youtube;
 mod ytdlp;
 
 fn main() -> eframe::Result {
+    updates::add_winget_links_to_path();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("PlaylistYT")

@@ -12,7 +12,7 @@ Escribes el cantante y el número de canciones, pulsas **Crear playlist** y la a
 - **Historial** de las playlists creadas: verlas no gasta cuota.
 - **Borrar** una playlist de tu cuenta desde la propia app.
 - **Descargar el audio** en MP3 (máxima compatibilidad) o M4A, con nombres `Cantante - Canción`, carátula del álbum y etiquetas (necesita ffmpeg).
-- **Actualizar yt-dlp y ffmpeg** desde Ajustes, para cuando YouTube cambia algo.
+- **Instala yt-dlp y ffmpeg** por ti la primera vez (con winget) y los **actualiza** desde Ajustes, para cuando YouTube cambia algo.
 - **IA intercambiable:** DeepSeek (por defecto), OpenAI, Gemini, OpenRouter, Claude, Ollama (local) o cualquier endpoint compatible con OpenAI.
 - **Contador de cuota** de la YouTube Data API, con la hora de reinicio.
 
@@ -28,36 +28,28 @@ Escribes el cantante y el número de canciones, pulsas **Crear playlist** y la a
 
 ## Guía de uso: dejar la app funcionando
 
-Necesitas cinco cosas. Todo es gratis salvo el LLM, que cuesta céntimos por playlist (o nada si usas Ollama en local).
+Todo es gratis salvo el LLM, que cuesta céntimos por playlist (o nada si usas Ollama en local).
 
 | Qué | Para qué | Paso |
 |---|---|---|
-| Rust | compilar la app | 1 |
-| yt-dlp | buscar y descargar | 1 |
-| ffmpeg | descargar en MP3 con carátula | 1 |
+| La app (`PlaylistYT.exe`) | todo | 1 |
+| yt-dlp y ffmpeg | buscar y descargar | 2 (la app los instala) |
 | API key de un LLM | elegir las canciones | 3 |
 | Cliente OAuth de Google | crear playlists en tu cuenta | 4 |
 
-### 1. Instalar las herramientas
-Abre PowerShell y ejecuta:
-```
-winget install Rustlang.Rustup
-winget install yt-dlp.yt-dlp
-winget install Gyan.FFmpeg
-```
-Cierra y vuelve a abrir PowerShell para que reconozca los comandos nuevos. Si `cargo` da error al compilar por falta de un "linker", instala también las herramientas de compilación de C++: `winget install Microsoft.VisualStudio.2022.BuildTools` y, en el instalador, marca **Desarrollo para el escritorio con C++**.
+### 1. Descargar la app
+Descarga `PlaylistYT.exe` de la última versión en [Releases](https://github.com/Deigo05/PlaylistYT/releases/latest) y guárdalo en una carpeta fija (por ejemplo `Documentos\PlaylistYT`). No necesita instalación.
 
-ffmpeg también se puede instalar luego desde la propia app (**Ajustes → Instalar ffmpeg**).
+La primera vez Windows puede mostrar "Windows protegió su PC", porque el ejecutable no está firmado con un certificado de pago. Pulsa **Más información → Ejecutar de todas formas**.
+
+¿Prefieres compilarla tú? Mira [Compilar desde el código](#compilar-desde-el-código).
+
+### 2. Instalar yt-dlp y ffmpeg desde la app
+Al abrir la app por primera vez, si falta alguna herramienta aparece el aviso **Faltan herramientas**. Pulsa **Instalar lo que falta**: la app las instala con winget (incluido en Windows 10 y 11) y las detecta sola en uno o dos minutos, sin reiniciar. Al terminar, la barra inferior muestra en verde la versión de yt-dlp y la de ffmpeg.
+
+Si lo prefieres a mano, en PowerShell: `winget install yt-dlp.yt-dlp` y `winget install Gyan.FFmpeg`.
 
 **Mantén yt-dlp y ffmpeg al día.** Cuando YouTube cambia algo, las búsquedas o descargas fallan (por ejemplo con "HTTP Error 403"). En **Ajustes** están los botones **Actualizar yt-dlp** (usa pip, winget o `yt-dlp -U`, según cómo lo instalaste) y **Actualizar ffmpeg** (winget).
-
-### 2. Descargar y compilar la app
-```
-git clone https://github.com/Deigo05/PlaylistYT.git
-cd PlaylistYT
-cargo run --release
-```
-La primera compilación tarda unos minutos. Las siguientes veces abre directamente `target\release\PlaylistYT.exe` (puedes crear un acceso directo).
 
 ### 3. API key del LLM
 1. Crea una API key en tu proveedor. Con DeepSeek: <https://platform.deepseek.com> → **API keys** → **Create new API key** (necesitas algo de saldo; unos pocos dólares dan para cientos de playlists).
@@ -114,6 +106,7 @@ Google da 10.000 unidades al día por proyecto. Una playlist de N canciones cues
 | Síntoma | Solución |
 |---|---|
 | "Acceso bloqueado" al conectar | Tu cuenta no está en **Usuarios de prueba** (paso 4.5). |
+| "Instalar lo que falta" dice que winget no está disponible | Instala "Instalador de aplicación" desde Microsoft Store, o instala las herramientas a mano (paso 2). |
 | La búsqueda o la descarga falla ("HTTP Error 403") | Actualiza yt-dlp: **Ajustes → Actualizar yt-dlp**. |
 | yt-dlp avisa de que falta un "JavaScript runtime" | Instala Deno: `winget install DenoLand.Deno`. |
 | No deja elegir MP3 | Falta ffmpeg: **Ajustes → Instalar ffmpeg**, o elige M4A. |
@@ -128,6 +121,15 @@ Nada sensible se guarda dentro de la carpeta del proyecto:
 - `client_secret.json` → donde tú lo guardes (el `.gitignore` lo excluye por si acaso).
 
 La app solo habla con el proveedor de IA que elijas, con YouTube (búsquedas con yt-dlp y la YouTube Data API) y con Google para autorizar.
+
+## Compilar desde el código
+Necesitas Rust (`winget install Rustlang.Rustup`). Si al compilar falta un "linker", instala también `winget install Microsoft.VisualStudio.2022.BuildTools` y, en el instalador, marca **Desarrollo para el escritorio con C++**.
+```
+git clone https://github.com/Deigo05/PlaylistYT.git
+cd PlaylistYT
+cargo build --release
+```
+La primera compilación tarda unos minutos. El ejecutable queda en `target\release\PlaylistYT.exe`.
 
 ## Desarrollo
 ```

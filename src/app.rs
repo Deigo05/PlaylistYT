@@ -51,6 +51,8 @@ pub struct PlaylistApp {
     /// Versión de ffmpeg o motivo por el que no está disponible.
     ffmpeg_status: Option<Result<String, String>>,
     ffmpeg_busy: bool,
+    /// Se está instalando lo que faltaba desde el aviso de primer uso.
+    tools_installing: bool,
 }
 
 enum FilesAction {
@@ -96,6 +98,7 @@ impl PlaylistApp {
             files_task: None,
             ffmpeg_status: None,
             ffmpeg_busy: true,
+            tools_installing: false,
         }
     }
 
@@ -147,14 +150,14 @@ impl PlaylistApp {
                 Event::YtdlpUpdated(result) => {
                     match result {
                         Ok(msg) => self.progress.push(msg),
-                        Err(msg) => self.error = Some(format!("No se pudo actualizar yt-dlp: {msg}")),
+                        Err(msg) => self.error = Some(format!("No se pudo instalar o actualizar yt-dlp: {msg}")),
                     }
                     self.worker.send(Command::CheckYtdlp(self.config.ytdlp_path.clone()));
                 }
                 Event::FfmpegUpdated(result) => {
                     match result {
                         Ok(msg) => self.progress.push(msg),
-                        Err(msg) => self.error = Some(format!("No se pudo actualizar ffmpeg: {msg}")),
+                        Err(msg) => self.error = Some(format!("No se pudo instalar o actualizar ffmpeg: {msg}")),
                     }
                     self.worker.send(Command::CheckFfmpeg(self.config.ffmpeg_path.clone()));
                 }
@@ -255,6 +258,60 @@ impl PlaylistApp {
                 }
             }
         });
+    }
+
+    /// Aviso de primer uso: si falta yt-dlp o ffmpeg, ofrece instalarlos con winget.
+    fn tools_banner(&mut self, ui: &mut egui::Ui) {
+        let installing = self.tools_installing && (self.ytdlp_busy || self.ffmpeg_busy);
+        let missing_ytdlp = !self.ytdlp_busy && matches!(self.ytdlp_status, Some(Err(_)));
+        let missing_ffmpeg = !self.ffmpeg_busy && matches!(self.ffmpeg_status, Some(Err(_)));
+        if !installing && !missing_ytdlp && !missing_ffmpeg {
+            self.tools_installing = false;
+            return;
+        }
+        let mut install = false;
+        egui::Frame::new()
+            .fill(theme::INSET)
+            .stroke(egui::Stroke::new(1.0, theme::WARN.gamma_multiply(0.7)))
+            .inner_margin(egui::Margin::symmetric(12, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                if installing {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new("INSTALANDO HERRAMIENTAS…").monospace().size(11.5).color(theme::WARN));
+                    });
+                    ui.label(theme::meta("winget las descarga e instala; tarda uno o dos minutos."));
+                    return;
+                }
+                let mut what = Vec::new();
+                if missing_ytdlp {
+                    what.push("yt-dlp (para buscar y descargar)");
+                }
+                if missing_ffmpeg {
+                    what.push("ffmpeg (para MP3, carátula y etiquetas)");
+                }
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("FALTAN HERRAMIENTAS").monospace().size(11.5).color(theme::WARN));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let busy = self.running || self.files_task.is_some();
+                        install = ui.add_enabled(!busy, theme::primary("Instalar lo que falta")).clicked();
+                    });
+                });
+                ui.label(what.join("  ·  "));
+                ui.label(theme::meta("Se instalan con winget, incluido en Windows 10 y 11."));
+            });
+        ui.add_space(6.0);
+        if install {
+            self.tools_installing = true;
+            self.error = None;
+            self.ytdlp_busy |= missing_ytdlp;
+            self.ffmpeg_busy |= missing_ffmpeg;
+            self.worker.send(Command::InstallMissing {
+                ytdlp: missing_ytdlp.then(|| self.config.ytdlp_path.clone()),
+                ffmpeg: missing_ffmpeg.then(|| self.config.ffmpeg_path.clone()),
+            });
+        }
     }
 
     fn form(&mut self, ui: &mut egui::Ui) {
@@ -604,7 +661,14 @@ impl PlaylistApp {
                         }
                         let idle = !self.ytdlp_busy && !self.running && self.files_task.is_none();
                         if ui
-                            .add_enabled(idle, theme::secondary("Actualizar yt-dlp"))
+                            .add_enabled(
+                                idle,
+                                theme::secondary(if matches!(self.ytdlp_status, Some(Err(_))) {
+                                    "Instalar yt-dlp"
+                                } else {
+                                    "Actualizar yt-dlp"
+                                }),
+                            )
                             .on_hover_text("Usa pip, winget o yt-dlp -U según cómo esté instalado")
                             .clicked()
                         {
@@ -797,6 +861,7 @@ impl eframe::App for PlaylistApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(22, 14)))
             .show(ui, |ui| {
+                self.tools_banner(ui);
                 self.form(ui);
                 self.progress_view(ui);
                 self.playlist_view(ui);

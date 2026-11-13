@@ -21,6 +21,29 @@ enum Method {
     SelfUpdate,
 }
 
+/// Carpeta donde winget deja los programas "portables" (yt-dlp, Deno…). winget la añade
+/// al PATH del usuario, pero una app que ya estaba abierta no lo ve hasta reiniciarse.
+fn winget_links() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|d| d.join("Microsoft").join("WinGet").join("Links"))
+}
+
+/// Añade al final del PATH de este proceso la carpeta de winget, para encontrar lo que
+/// se instale con la app abierta. Hay que llamarla al arrancar, antes de crear hilos.
+pub fn add_winget_links_to_path() {
+    let Some(links) = winget_links() else { return };
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths: Vec<PathBuf> = std::env::split_paths(&current).collect();
+    let same = |p: &PathBuf| p.to_string_lossy().eq_ignore_ascii_case(&links.to_string_lossy());
+    if paths.iter().any(same) {
+        return;
+    }
+    paths.push(links);
+    if let Ok(joined) = std::env::join_paths(paths) {
+        // SAFETY: se llama al principio de main, cuando todavía no hay otros hilos.
+        unsafe { std::env::set_var("PATH", joined) };
+    }
+}
+
 /// Busca un ejecutable en el PATH como lo haría la consola.
 fn which(bin: &str) -> Option<PathBuf> {
     let path = Path::new(bin);
@@ -81,9 +104,19 @@ async fn winget(package: &str, install_if_missing: bool) -> Result<String> {
     }
 }
 
-/// Actualiza yt-dlp con el método con el que está instalado. Devuelve la nueva versión.
+/// Actualiza yt-dlp con el método con el que está instalado; si no está, lo instala con
+/// winget (que trae también Deno y un ffmpeg). Devuelve un resumen con la versión.
 pub async fn update_ytdlp(bin: &str) -> Result<String> {
-    let exe = which(bin.trim()).with_context(|| format!("no se encuentra yt-dlp ('{bin}'). Instálalo con: winget install yt-dlp"))?;
+    let bin = bin.trim();
+    let Some(exe) = which(bin) else {
+        if Path::new(bin).components().count() > 1 {
+            bail!("no se encuentra yt-dlp en \"{bin}\". Corrige la ruta en Ajustes, o pon solo yt-dlp para instalarlo.");
+        }
+        winget(YTDLP_PACKAGE, true).await?;
+        let exe = which(bin).context("yt-dlp se instaló, pero no se encuentra; cierra y vuelve a abrir la app")?;
+        let version = ytdlp::version(&exe.to_string_lossy()).await?;
+        return Ok(format!("yt-dlp instalado ({version})."));
+    };
     let message = match method_for(&exe) {
         Method::Pip(python) => {
             let (code, text) = run(&python, &["-m", "pip", "install", "-U", "--disable-pip-version-check", "yt-dlp[default]"]).await?;
@@ -133,6 +166,13 @@ mod tests {
         println!("{:?}", which("yt-dlp").map(|p| method_for(&p)));
         println!("{:?}", update_ytdlp("yt-dlp").await);
         println!("{:?}", update_ffmpeg("").await);
+    }
+
+    #[tokio::test]
+    async fn no_instala_si_la_ruta_propia_no_existe() {
+        // Con una ruta propia que no existe no se lanza winget: se pide corregirla.
+        let err = update_ytdlp(r"C:\no\existe\yt-dlp.exe").await.unwrap_err();
+        assert!(err.to_string().contains("Corrige la ruta"), "{err}");
     }
 
     #[test]

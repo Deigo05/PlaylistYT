@@ -25,6 +25,8 @@ pub enum Command {
     UpdateFfmpeg(String),
     /// Descarga con yt-dlp el audio de la playlist.
     Download(Config, PlaylistResult),
+    /// Instala con winget las herramientas que falten (ruta de yt-dlp, ruta de ffmpeg).
+    InstallMissing { ytdlp: Option<String>, ffmpeg: Option<String> },
 }
 
 pub enum Event {
@@ -140,6 +142,20 @@ async fn handle(cmd: Command, quota: Arc<Mutex<Quota>>, emit: Arc<impl Fn(Event)
                 .await
                 .map_err(|e| format!("{e:#}"));
             emit(Event::FilesTaskDone(result));
+        }
+        Command::InstallMissing { ytdlp, ffmpeg } => {
+            // Una detrás de otra: winget no admite dos instalaciones a la vez.
+            if let Some(bin) = ytdlp {
+                emit(Event::YtdlpUpdated(updates::update_ytdlp(&bin).await.map_err(|e| format!("{e:#}"))));
+            }
+            if let Some(path) = ffmpeg {
+                // El paquete de yt-dlp en winget puede haber traído ya un ffmpeg.
+                let result = match ffmpeg::find(&path).await {
+                    Ok(found) => Ok(format!("ffmpeg {} ya está disponible.", found.version)),
+                    Err(_) => updates::update_ffmpeg(&path).await.map_err(|e| format!("{e:#}")),
+                };
+                emit(Event::FfmpegUpdated(result));
+            }
         }
     }
 }
