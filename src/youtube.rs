@@ -1,7 +1,7 @@
 //! YouTube Data API v3: OAuth de escritorio, crear playlists y añadir vídeos.
 
 use crate::config::Config;
-use crate::quota::{COST_INSERT, COST_LIST, Quota};
+use crate::quota::{COST_DELETE, COST_INSERT, COST_LIST, Quota};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 use std::future::Future;
@@ -166,6 +166,16 @@ impl YouTube {
             .as_str()
             .map(str::to_string)
             .ok_or_else(|| anyhow!("YouTube no devolvió el id de la playlist"))
+    }
+
+    /// Borra una playlist de la cuenta. Si ya no existe (borrada a mano en YouTube) no es error.
+    pub async fn delete_playlist(&self, playlist_id: &str) -> Result<()> {
+        let req = self.http.delete(format!("{API}/playlists")).query(&[("id", playlist_id)]);
+        match self.call(req, COST_DELETE).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.downcast_ref::<ApiError>().is_some_and(|a| a.status == reqwest::StatusCode::NOT_FOUND) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Añade un vídeo al final de la playlist, reintentando los fallos pasajeros.

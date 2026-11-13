@@ -91,7 +91,7 @@ pub async fn create_playlist(
         bail!("{} no reconoce a \"{artist}\". Revisa el nombre del cantante.", llm.provider_label());
     }
     let reserves = songs.split_off((req.count as usize).min(songs.len()));
-    progress(format!("✓ {} canciones: {}", songs.len(), titles(&songs)));
+    progress(format!("Lista de {} canciones: {}", songs.len(), titles(&songs)));
 
     // 2. Conectar con YouTube antes del trabajo largo (puede abrir el navegador)
     progress("Conectando con YouTube…".into());
@@ -105,7 +105,7 @@ pub async fn create_playlist(
     let mut chosen: Vec<Option<PlaylistItem>> = match choose_with_llm(&llm, &artist, &searches).await {
         Ok(picks) => picks,
         Err(e) => {
-            progress(format!("⚠ El LLM no pudo elegir ({e:#}); uso la heurística."));
+            progress(format!("Aviso: el LLM no pudo elegir ({e:#}); uso la heurística."));
             searches.iter().map(|s| best_by_heuristic(s, &HashSet::new())).collect()
         }
     };
@@ -169,18 +169,18 @@ pub async fn create_playlist(
         match youtube.add_video(&playlist_id, &item.video_id).await {
             Ok(()) => added.push(item),
             Err(e) if e.is::<QuotaExceeded>() => {
-                progress(format!("⚠ {e}"));
+                progress(format!("Aviso: {e}"));
                 missing.push(item.song);
                 missing.extend(pending.by_ref().map(|(_, it)| it.song));
             }
             Err(e) => {
-                progress(format!("⚠ No se pudo añadir \"{}\": {e:#}", item.song));
+                progress(format!("Aviso: no se pudo añadir \"{}\": {e:#}", item.song));
                 missing.push(item.song);
             }
         }
     }
 
-    progress(format!("✓ Playlist creada con {} canciones.", added.len()));
+    progress(format!("Playlist creada con {} canciones.", added.len()));
     Ok(PlaylistResult {
         playlist_id,
         title,
@@ -272,7 +272,7 @@ async fn search_all(bin: &str, artist: &str, songs: &[Song], progress: &Progress
                 for result in [music, video] {
                     match result {
                         Ok(found) => all.extend(found),
-                        Err(e) => progress(format!("⚠ {}: {e:#}", song.title)),
+                        Err(e) => progress(format!("Aviso: {}: {e:#}", song.title)),
                     }
                 }
                 let ranked = ranking::rank(&all, &song.title, &artist);

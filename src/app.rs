@@ -4,7 +4,7 @@
 use crate::agent::{self, MAX_SONGS, Request};
 use crate::config::{self, Config, Provider};
 use crate::history::{self, PlaylistResult};
-use crate::quota::{self, DAILY_LIMIT, Quota, playlist_cost};
+use crate::quota::{self, COST_DELETE, DAILY_LIMIT, Quota, playlist_cost};
 use crate::worker::{Command, Event, Worker};
 use chrono::Utc;
 use eframe::egui::{self, Color32, RichText};
@@ -41,6 +41,10 @@ pub struct PlaylistApp {
     ytdlp_busy: bool,
     youtube_status: Option<Result<String, String>>,
     youtube_busy: bool,
+    /// Playlist (id) pendiente de confirmar su borrado.
+    confirm_delete: Option<String>,
+    /// Playlist (id) que se está borrando.
+    deleting: Option<String>,
 }
 
 impl PlaylistApp {
@@ -74,6 +78,8 @@ impl PlaylistApp {
             ytdlp_busy: true,
             youtube_status: None,
             youtube_busy,
+            confirm_delete: None,
+            deleting: None,
         }
     }
 
@@ -96,6 +102,13 @@ impl PlaylistApp {
                 Event::Failed(msg) => {
                     self.running = false;
                     self.error = Some(msg);
+                }
+                Event::PlaylistDeleted { playlist_id, result } => {
+                    self.deleting = None;
+                    match result {
+                        Ok(()) => self.remove_from_history(&playlist_id),
+                        Err(msg) => self.error = Some(format!("No se pudo borrar la playlist: {msg}")),
+                    }
                 }
                 Event::YoutubeConnected(result) => {
                     self.youtube_busy = false;
@@ -132,6 +145,19 @@ impl PlaylistApp {
         }));
     }
 
+    fn remove_from_history(&mut self, playlist_id: &str) {
+        let Some(pos) = self.history.iter().position(|p| p.playlist_id == playlist_id) else { return };
+        let removed = self.history.remove(pos);
+        history::save(&self.history);
+        self.progress.push(format!("Playlist \"{}\" borrada de YouTube.", removed.title));
+        self.selected = match self.selected {
+            _ if self.history.is_empty() => None,
+            Some(s) if s > pos => Some(s - 1),
+            Some(s) => Some(s.min(self.history.len() - 1)),
+            None => None,
+        };
+    }
+
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading("PlaylistYT");
@@ -146,7 +172,7 @@ impl PlaylistApp {
                     ui.label(format!("yt-dlp {v}"));
                 }
                 Some(Err(e)) => {
-                    ui.colored_label(Color32::from_rgb(220, 120, 0), "⚠ yt-dlp no disponible")
+                    ui.colored_label(Color32::from_rgb(220, 120, 0), "yt-dlp no disponible")
                         .on_hover_text(e);
                 }
                 None => {}
@@ -161,7 +187,7 @@ impl PlaylistApp {
                     ui.label(format!("YouTube: {channel}"));
                 }
                 Some(Err(e)) => {
-                    ui.colored_label(Color32::from_rgb(220, 120, 0), "⚠ YouTube sin conectar")
+                    ui.colored_label(Color32::from_rgb(220, 120, 0), "YouTube sin conectar")
                         .on_hover_text(e);
                 }
                 None => {
@@ -170,7 +196,7 @@ impl PlaylistApp {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⚙ Ajustes").clicked() && self.settings.is_none() {
+                if ui.button("Ajustes").clicked() && self.settings.is_none() {
                     self.settings = Some(SettingsDraft {
                         config: self.config.clone(),
                         api_key: self.api_key.clone(),
@@ -238,9 +264,9 @@ impl PlaylistApp {
         } else if remaining < cost {
             Some(format!("Cuota insuficiente: quedan {} unidades.", thousands(remaining)))
         } else if self.config.llm.provider.needs_api_key() && self.api_key.trim().is_empty() {
-            Some(format!("Falta la API key de {} (⚙ Ajustes).", self.config.llm.provider.label()))
+            Some(format!("Falta la API key de {} (en Ajustes).", self.config.llm.provider.label()))
         } else if self.config.client_secret_path.trim().is_empty() {
-            Some("Falta configurar YouTube (⚙ Ajustes).".to_string())
+            Some("Falta configurar YouTube (en Ajustes).".to_string())
         } else {
             None
         };
@@ -269,7 +295,7 @@ impl PlaylistApp {
     fn progress_view(&mut self, ui: &mut egui::Ui) {
         if let Some(err) = &self.error {
             ui.add_space(4.0);
-            ui.colored_label(Color32::from_rgb(220, 60, 60), format!("✖ {err}"));
+            ui.colored_label(Color32::from_rgb(220, 60, 60), format!("Error: {err}"));
         }
         if self.progress.is_empty() {
             return;
@@ -289,18 +315,44 @@ impl PlaylistApp {
     }
 
     fn playlist_view(&mut self, ui: &mut egui::Ui) {
+        let delete_blocker = if self.running {
+            Some("Espera a que termine la playlist en curso.".to_string())
+        } else if self.deleting.is_some() {
+            Some("Ya se está borrando una playlist.".to_string())
+        } else if self.config.client_secret_path.trim().is_empty() {
+            Some("Falta configurar YouTube en Ajustes.".to_string())
+        } else if self.quota.lock().unwrap().remaining() < COST_DELETE {
+            Some(format!("Borrar cuesta {COST_DELETE} unidades de cuota y no quedan suficientes."))
+        } else {
+            None
+        };
         let Some(p) = self.selected.and_then(|i| self.history.get(i)) else {
             ui.weak("Aquí aparecerá la playlist creada por el agente.");
             return;
         };
         ui.heading(&p.title);
         let url = p.url();
+        let mut ask_delete = false;
         ui.horizontal(|ui| {
             ui.hyperlink_to(&url, &url);
             if ui.button("Copiar link").clicked() {
                 ui.ctx().copy_text(url.clone());
             }
+            if self.deleting.as_deref() == Some(p.playlist_id.as_str()) {
+                ui.spinner();
+                ui.label("Borrando…");
+            } else {
+                let resp = ui.add_enabled(delete_blocker.is_none(), egui::Button::new("Borrar playlist"));
+                let resp = match &delete_blocker {
+                    Some(reason) => resp.on_disabled_hover_text(reason),
+                    None => resp.on_hover_text(format!("La borra de tu cuenta de YouTube ({COST_DELETE} unidades)")),
+                };
+                ask_delete = resp.clicked();
+            }
         });
+        if ask_delete {
+            self.confirm_delete = Some(p.playlist_id.clone());
+        }
         ui.weak(format!(
             "{} canciones · oculta (unlisted) · creada el {}",
             p.items.len(),
@@ -355,6 +407,42 @@ impl PlaylistApp {
                     });
                 }
             });
+    }
+
+    fn confirm_delete_window(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.confirm_delete.clone() else { return };
+        let Some(p) = self.history.iter().find(|p| p.playlist_id == id) else {
+            self.confirm_delete = None;
+            return;
+        };
+        let title = p.title.clone();
+        let mut confirmed = false;
+        let mut cancelled = false;
+        egui::Window::new("Borrar playlist")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("¿Borrar \"{title}\" de tu cuenta de YouTube?"));
+                ui.weak(format!(
+                    "No se puede deshacer. También desaparece del historial. Cuesta {COST_DELETE} unidades de cuota."
+                ));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let delete = egui::Button::new(RichText::new("Borrar").color(Color32::WHITE).strong())
+                        .fill(Color32::from_rgb(170, 40, 40));
+                    confirmed = ui.add(delete).clicked();
+                    cancelled = ui.button("Cancelar").clicked();
+                });
+            });
+        if confirmed {
+            self.confirm_delete = None;
+            self.error = None;
+            self.deleting = Some(id.clone());
+            self.worker.send(Command::DeletePlaylist(self.config.clone(), id));
+        } else if cancelled {
+            self.confirm_delete = None;
+        }
     }
 
     fn settings_window(&mut self, ctx: &egui::Context) {
@@ -552,6 +640,7 @@ impl eframe::App for PlaylistApp {
 
         let ctx = ui.ctx().clone();
         self.settings_window(&ctx);
+        self.confirm_delete_window(&ctx);
     }
 }
 

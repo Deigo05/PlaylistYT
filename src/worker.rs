@@ -16,12 +16,18 @@ pub enum Command {
     ConnectYoutube(Config),
     CheckYtdlp(String),
     UpdateYtdlp(String),
+    /// Borra de YouTube la playlist con ese id.
+    DeletePlaylist(Config, String),
 }
 
 pub enum Event {
     Progress(String),
     Done(PlaylistResult),
     Failed(String),
+    PlaylistDeleted {
+        playlist_id: String,
+        result: Result<(), String>,
+    },
     YoutubeConnected(Result<String, String>),
     YtdlpVersion(Result<String, String>),
     YtdlpUpdated(Result<String, String>),
@@ -95,6 +101,15 @@ async fn handle(cmd: Command, quota: Arc<Mutex<Quota>>, emit: Arc<impl Fn(Event)
         }
         Command::UpdateYtdlp(bin) => {
             emit(Event::YtdlpUpdated(ytdlp::update(&bin).await.map_err(|e| format!("{e:#}"))));
+        }
+        Command::DeletePlaylist(config, playlist_id) => {
+            let result = async {
+                let yt = YouTube::connect(&config, quota).await?;
+                yt.delete_playlist(&playlist_id).await
+            }
+            .await
+            .map_err(|e| format!("{e:#}"));
+            emit(Event::PlaylistDeleted { playlist_id, result });
         }
     }
 }

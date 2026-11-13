@@ -36,7 +36,7 @@ La próxima vez puedes abrir directamente `target\release\PlaylistYT.exe`.
 
 ### 3. API key del LLM
 1. Crea una API key en tu proveedor. Con DeepSeek: <https://platform.deepseek.com> → **API keys** → **Create new API key** (necesitas algo de saldo).
-2. En la app, abre **⚙ Ajustes**, elige el proveedor, pega la key en **API key** y pulsa **Guardar**.
+2. En la app, abre **Ajustes**, elige el proveedor, pega la key en **API key** y pulsa **Guardar**.
 
 Otros proveedores disponibles: OpenAI, Gemini, OpenRouter, Claude, Ollama (local, sin key) o cualquier endpoint compatible con OpenAI ("Personalizado"). La URL base y el modelo se pueden editar.
 
@@ -55,7 +55,7 @@ Cada usuario crea su propio cliente OAuth; la app no trae ninguno.
 7. Guarda ese archivo en un sitio fijo, por ejemplo `%APPDATA%\PlaylistYT\client_secret.json`. **No lo compartas ni lo subas a ningún repositorio.**
 
 ### 5. Conectar con YouTube
-1. En **⚙ Ajustes**, pon la ruta del `client_secret.json` y pulsa **Guardar**.
+1. En **Ajustes**, pon la ruta del `client_secret.json` y pulsa **Guardar**.
 2. Pulsa **Conectar con YouTube**. Se abre el navegador:
    - elige la cuenta que añadiste como usuario de prueba;
    - en el aviso "Google no verificó esta app" pulsa **Continuar** (es tu propia app en modo prueba);
@@ -66,6 +66,9 @@ En modo de prueba Google caduca el permiso cada 7 días; cuando pase, la app vue
 
 ### 6. Crear una playlist
 Escribe el cantante, elige el número de canciones (1–50) y pulsa **Crear playlist**. Al terminar verás el link (con botón de copiar) y la tabla de canciones con su tipo: audio original, audio oficial o vídeo oficial. Las playlists anteriores quedan en el historial de la izquierda.
+
+### 7. Borrar una playlist
+Selecciónala en el historial y pulsa **Borrar playlist** junto al link. Tras confirmar, se borra de tu cuenta de YouTube y del historial (cuesta 50 unidades; no se puede deshacer). Si ya la habías borrado a mano en YouTube, la app solo la quita del historial.
 
 ### Cuota de YouTube
 Google da 10.000 unidades al día por proyecto. Una playlist de N canciones cuesta 50 + 50·N (10 canciones = 550 u., unas 18 playlists al día). La app lleva la cuenta y muestra cuándo se reinicia (medianoche, hora del Pacífico).

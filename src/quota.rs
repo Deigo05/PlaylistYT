@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 pub const DAILY_LIMIT: u32 = 10_000;
 pub const COST_INSERT: u32 = 50;
+pub const COST_DELETE: u32 = 50;
 pub const COST_LIST: u32 = 1;
 
 /// Coste de crear una playlist con `songs` canciones (insert de la playlist + un insert por canción).
