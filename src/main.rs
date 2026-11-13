@@ -8,6 +8,7 @@ mod ffmpeg;
 mod history;
 mod llm;
 mod quota;
+mod theme;
 mod updates;
 mod ranking;
 mod worker;

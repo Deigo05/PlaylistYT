@@ -3,7 +3,7 @@
 
 use crate::agent::{self, MAX_SONGS, Request};
 use crate::config::{self, AudioFormat, Config, Provider};
-use crate::download;
+use crate::{download, theme};
 use crate::history::{self, PlaylistResult};
 use crate::quota::{self, COST_DELETE, DAILY_LIMIT, Quota, playlist_cost};
 use crate::worker::{Command, Event, Worker};
@@ -60,6 +60,7 @@ enum FilesAction {
 
 impl PlaylistApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        theme::apply(&cc.egui_ctx);
         let config = Config::load();
         let api_key = config::load_api_key(config.llm.provider);
         let quota = Arc::new(Mutex::new(Quota::load()));
@@ -188,60 +189,43 @@ impl PlaylistApp {
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.heading("PlaylistYT");
-            ui.separator();
-
-            match &self.ytdlp_status {
-                _ if self.ytdlp_busy => {
-                    ui.spinner();
-                    ui.label("yt-dlp…");
-                }
-                Some(Ok(v)) => {
-                    ui.label(format!("yt-dlp {v}"));
-                }
-                Some(Err(e)) => {
-                    ui.colored_label(Color32::from_rgb(220, 120, 0), "yt-dlp no disponible")
-                        .on_hover_text(e);
-                }
-                None => {}
-            }
-            ui.separator();
-            match &self.youtube_status {
-                _ if self.youtube_busy => {
-                    ui.spinner();
-                    ui.label("Conectando con YouTube…");
-                }
-                Some(Ok(channel)) => {
-                    ui.label(format!("YouTube: {channel}"));
-                }
-                Some(Err(e)) => {
-                    ui.colored_label(Color32::from_rgb(220, 120, 0), "YouTube sin conectar")
-                        .on_hover_text(e);
-                }
-                None => {
-                    ui.label("YouTube sin conectar");
-                }
-            }
-
+            ui.label(RichText::new("PLAYLISTYT").monospace().size(15.0).strong().color(theme::TEXT));
+            ui.label(theme::meta("/  AGENTE DE PLAYLISTS"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Ajustes").clicked() && self.settings.is_none() {
+                if ui.add(theme::secondary("Ajustes")).clicked() && self.settings.is_none() {
                     self.settings = Some(SettingsDraft {
                         config: self.config.clone(),
                         api_key: self.api_key.clone(),
                     });
                 }
+            });
+        });
+    }
+
+    /// Barra inferior con el estado de las herramientas y la cuota.
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
+        // "9.0.2-full_build-www.gyan.dev" → "9.0.2"
+        let ffmpeg = self
+            .ffmpeg_status
+            .as_ref()
+            .map(|r| r.as_ref().map(|v| v.split('-').next().unwrap_or(v).to_string()).map_err(Clone::clone));
+        ui.horizontal(|ui| {
+            theme::status(ui, "yt-dlp", self.ytdlp_busy, self.ytdlp_status.as_ref(), "no disponible");
+            ui.separator();
+            theme::status(ui, "ffmpeg", self.ffmpeg_busy, ffmpeg.as_ref(), "no disponible");
+            ui.separator();
+            theme::status(ui, "YouTube", self.youtube_busy, self.youtube_status.as_ref(), "sin conectar");
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (used, reset) = {
                     let mut q = self.quota.lock().unwrap();
                     q.refresh(Utc::now());
                     (q.used(), quota::next_reset(Utc::now()))
                 };
-                ui.label(format!(
-                    "Cuota YouTube: {} / {} · se reinicia a las {}",
-                    thousands(used),
-                    thousands(DAILY_LIMIT),
-                    reset.format("%H:%M")
-                ))
-                .on_hover_text(
+                ui.label(theme::meta(format!("REINICIO {}", reset.format("%H:%M"))));
+                let resp = ui.label(theme::readout(format!("{} / {}", thousands(used), thousands(DAILY_LIMIT))));
+                ui.label(theme::meta("CUOTA"));
+                resp.on_hover_text(
                     "Contador local: suma el coste de cada llamada que hace esta app. \
                      El dato oficial está en Google Cloud Console → Cuotas.",
                 );
@@ -250,18 +234,23 @@ impl PlaylistApp {
     }
 
     fn history_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Historial");
-        ui.separator();
+        theme::panel_header(ui, &format!("Historial  ·  {}", self.history.len()));
         if self.history.is_empty() {
-            ui.weak("Aún no has creado playlists.");
+            ui.label(theme::meta("Aún no has creado playlists."));
         }
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (i, p) in self.history.iter().enumerate() {
-                let text = format!("{}\n{}", p.title, p.created_at.format("%d/%m/%Y %H:%M"));
-                if ui
-                    .selectable_label(self.selected == Some(i), text)
-                    .clicked()
-                {
+                let selected = self.selected == Some(i);
+                let mut job = egui::text::LayoutJob::default();
+                let title_color = if selected { theme::TEXT } else { Color32::from_rgb(214, 213, 210) };
+                job.append(&p.title, 0.0, egui::TextFormat::simple(egui::FontId::proportional(13.5), title_color));
+                job.append(
+                    &format!("\n{} · {} CANCIONES", p.created_at.format("%d/%m/%Y"), p.items.len()),
+                    0.0,
+                    egui::TextFormat::simple(egui::FontId::monospace(10.0), theme::MUTED),
+                );
+                let button = egui::Button::selectable(selected, job).min_size(egui::vec2(ui.available_width(), 40.0));
+                if ui.add(button).clicked() {
                     self.selected = Some(i);
                 }
             }
@@ -269,16 +258,17 @@ impl PlaylistApp {
     }
 
     fn form(&mut self, ui: &mut egui::Ui) {
-        egui::Grid::new("form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            ui.label("Cantante:");
+        theme::section(ui, "01", "Nueva playlist");
+        egui::Grid::new("form").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+            ui.label(theme::meta("CANTANTE"));
             ui.add(
                 egui::TextEdit::singleline(&mut self.artist)
                     .hint_text("Ej.: Queen, Shakira, Bad Bunny")
-                    .desired_width(280.0),
+                    .desired_width(300.0),
             );
             ui.end_row();
 
-            ui.label("Nº de canciones más populares:");
+            ui.label(theme::meta("Nº DE CANCIONES"));
             ui.add(egui::DragValue::new(&mut self.count).range(1..=MAX_SONGS));
             ui.end_row();
         });
@@ -301,45 +291,57 @@ impl PlaylistApp {
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let button = egui::Button::new(RichText::new("Crear playlist").strong());
-            let resp = ui.add_enabled(blocker.is_none(), button);
+            let resp = ui.add_enabled(blocker.is_none(), theme::primary("Crear playlist"));
             if resp.clicked() {
                 self.start_creation();
             }
             if self.running {
                 ui.spinner();
             }
-            ui.label(format!(
-                "Coste estimado: {} unidades de cuota · IA: {}",
-                thousands(cost),
-                self.config.llm.provider.label()
-            ));
+            ui.label(theme::meta("COSTE"));
+            ui.label(theme::readout(format!("{} U.", thousands(cost))));
+            ui.label(theme::meta("·  IA"));
+            ui.label(theme::readout(self.config.llm.provider.label().to_uppercase()));
         });
         if let Some(reason) = blocker.filter(|_| !self.running) {
-            ui.weak(reason);
+            ui.label(RichText::new(reason).color(theme::MUTED));
         }
     }
 
     fn progress_view(&mut self, ui: &mut egui::Ui) {
+        if self.progress.is_empty() && self.error.is_none() {
+            return;
+        }
+        ui.add_space(8.0);
+        theme::section(ui, "02", "Progreso del agente");
         if let Some(err) = &self.error {
-            ui.add_space(4.0);
-            ui.colored_label(Color32::from_rgb(220, 60, 60), format!("Error: {err}"));
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("ERROR").monospace().size(11.0).color(theme::DANGER));
+                ui.label(RichText::new(err).color(theme::DANGER));
+            });
         }
         if self.progress.is_empty() {
             return;
         }
-        egui::CollapsingHeader::new("Progreso del agente")
-            .default_open(true)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(130.0)
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        for line in &self.progress {
-                            ui.label(line);
-                        }
-                    });
-            });
+        theme::inset().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::ScrollArea::vertical()
+                .max_height(110.0)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    let last = self.progress.len() - 1;
+                    for (i, line) in self.progress.iter().enumerate() {
+                        let color = if line.starts_with("Aviso") {
+                            theme::WARN
+                        } else if i == last {
+                            theme::TEXT
+                        } else {
+                            theme::MUTED
+                        };
+                        ui.label(RichText::new(format!("> {line}")).monospace().size(12.0).color(color));
+                    }
+                });
+        });
     }
 
     fn playlist_view(&mut self, ui: &mut egui::Ui) {
@@ -354,43 +356,44 @@ impl PlaylistApp {
         } else {
             None
         };
+        ui.add_space(8.0);
+        theme::section(ui, "03", "Playlist");
         let Some(p) = self.selected.and_then(|i| self.history.get(i)) else {
-            ui.weak("Aquí aparecerá la playlist creada por el agente.");
+            ui.label(theme::meta("Aquí aparecerá la playlist creada por el agente."));
             return;
         };
-        ui.heading(&p.title);
         let url = p.url();
         let mut ask_delete = false;
         ui.horizontal(|ui| {
-            ui.hyperlink_to(&url, &url);
-            if ui.button("Copiar link").clicked() {
-                ui.ctx().copy_text(url.clone());
-            }
-            if self.deleting.as_deref() == Some(p.playlist_id.as_str()) {
-                ui.spinner();
-                ui.label("Borrando…");
-            } else {
-                let resp = ui.add_enabled(delete_blocker.is_none(), egui::Button::new("Borrar playlist"));
-                let resp = match &delete_blocker {
-                    Some(reason) => resp.on_disabled_hover_text(reason),
-                    None => resp.on_hover_text(format!("La borra de tu cuenta de YouTube ({COST_DELETE} unidades)")),
-                };
-                ask_delete = resp.clicked();
-            }
+            ui.label(RichText::new(&p.title).heading().strong().color(theme::TEXT));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if self.deleting.as_deref() == Some(p.playlist_id.as_str()) {
+                    ui.label(theme::meta("BORRANDO…"));
+                    ui.spinner();
+                } else {
+                    let resp = ui.add_enabled(delete_blocker.is_none(), theme::danger("Borrar playlist"));
+                    let resp = match &delete_blocker {
+                        Some(reason) => resp.on_disabled_hover_text(reason),
+                        None => resp.on_hover_text(format!("La borra de tu cuenta de YouTube ({COST_DELETE} unidades)")),
+                    };
+                    ask_delete = resp.clicked();
+                }
+                if ui.add(theme::secondary("Copiar link")).clicked() {
+                    ui.ctx().copy_text(url.clone());
+                }
+            });
         });
+        ui.label(theme::meta(format!(
+            "{} CANCIONES  ·  OCULTA (UNLISTED)  ·  CREADA EL {}",
+            p.items.len(),
+            p.created_at.format("%d/%m/%Y %H:%M")
+        )));
+        ui.hyperlink_to(RichText::new(&url).monospace().size(12.5), &url);
         if ask_delete {
             self.confirm_delete = Some(p.playlist_id.clone());
         }
-        ui.weak(format!(
-            "{} canciones · oculta (unlisted) · creada el {}",
-            p.items.len(),
-            p.created_at.format("%d/%m/%Y %H:%M")
-        ));
         if !p.missing.is_empty() {
-            ui.colored_label(
-                Color32::from_rgb(220, 120, 0),
-                format!("No encontradas o no añadidas: {}", p.missing.join(", ")),
-            );
+            ui.colored_label(theme::WARN, format!("No encontradas o no añadidas: {}", p.missing.join(", ")));
         }
         ui.add_space(4.0);
 
@@ -402,14 +405,14 @@ impl PlaylistApp {
             match &self.files_task {
                 Some((id, label)) if *id == p.playlist_id => {
                     ui.spinner();
-                    ui.label(*label);
+                    ui.label(theme::meta(label.to_uppercase()));
                 }
                 _ => {
                     let format = self.config.audio_format;
                     let has_ffmpeg = matches!(self.ffmpeg_status, Some(Ok(_)));
                     let resp = ui.add_enabled(
                         !busy && (has_ffmpeg || !format.needs_ffmpeg()),
-                        egui::Button::new(format!("Descargar en {}", format.extension().to_uppercase())),
+                        theme::primary(&format!("Descargar en {}", format.extension())),
                     );
                     let hover = if format.needs_ffmpeg() && !has_ffmpeg {
                         "MP3 necesita ffmpeg. Instálalo o cambia el formato en Ajustes.".to_string()
@@ -423,12 +426,13 @@ impl PlaylistApp {
                     }
                 }
             }
-            if ui.button("Abrir carpeta").clicked() {
+            if ui.add(theme::secondary("Abrir carpeta")).clicked() {
                 files_action = Some(FilesAction::OpenFolder);
             }
-            ui.weak(format!("{downloaded} de {} descargadas", p.items.len()));
+            ui.label(theme::readout(format!("{downloaded} / {}", p.items.len())));
+            ui.label(theme::meta("DESCARGADAS"));
         });
-        ui.weak("Descarga solo música sobre la que tengas derechos.");
+        ui.label(RichText::new("Descarga solo música sobre la que tengas derechos.").small().color(theme::MUTED));
         match files_action {
             Some(FilesAction::Download) => {
                 self.progress.clear();
@@ -451,38 +455,42 @@ impl PlaylistApp {
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::exact(28.0))
-            .column(Column::initial(200.0).at_least(100.0))
-            .column(Column::initial(280.0).at_least(120.0).clip(true))
-            .column(Column::initial(150.0).clip(true))
-            .column(Column::exact(56.0))
-            .column(Column::remainder())
-            .header(22.0, |mut h| {
+            .column(Column::initial(180.0).at_least(100.0).clip(true))
+            .column(Column::initial(220.0).at_least(110.0).clip(true))
+            .column(Column::initial(130.0).at_least(80.0).clip(true))
+            .column(Column::exact(52.0))
+            .column(Column::remainder().at_least(120.0))
+            .header(24.0, |mut h| {
                 for title in ["#", "Canción", "Vídeo en YouTube", "Canal", "Dur.", "Tipo"] {
                     h.col(|ui| {
-                        ui.strong(title);
+                        ui.label(theme::meta(title.to_uppercase()));
                     });
                 }
             })
             .body(|mut body| {
                 for (i, item) in p.items.iter().enumerate() {
-                    body.row(22.0, |mut row| {
+                    body.row(26.0, |mut row| {
                         row.col(|ui| {
-                            ui.label((i + 1).to_string());
+                            ui.label(theme::meta(format!("{:02}", i + 1)));
                         });
                         row.col(|ui| {
-                            ui.label(&item.song);
+                            ui.label(RichText::new(&item.song).color(theme::TEXT));
                         });
                         row.col(|ui| {
                             ui.hyperlink_to(&item.video_title, item.url());
                         });
                         row.col(|ui| {
-                            ui.label(item.channel.as_deref().unwrap_or("YouTube Music"));
+                            ui.label(RichText::new(item.channel.as_deref().unwrap_or("YouTube Music")).color(theme::MUTED));
                         });
                         row.col(|ui| {
-                            ui.label(item.duration_secs.map(agent::format_duration).unwrap_or_default());
+                            ui.label(
+                                RichText::new(item.duration_secs.map(agent::format_duration).unwrap_or_default())
+                                    .monospace()
+                                    .color(theme::MUTED),
+                            );
                         });
                         row.col(|ui| {
-                            ui.label(item.kind.label());
+                            theme::kind_badge(ui, item.kind);
                         });
                     });
                 }
@@ -504,15 +512,16 @@ impl PlaylistApp {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.label(format!("¿Borrar \"{title}\" de tu cuenta de YouTube?"));
-                ui.weak(format!(
+                ui.label(RichText::new(format!(
                     "No se puede deshacer. También desaparece del historial. Cuesta {COST_DELETE} unidades de cuota."
-                ));
+                )).color(theme::MUTED));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let delete = egui::Button::new(RichText::new("Borrar").color(Color32::WHITE).strong())
-                        .fill(Color32::from_rgb(170, 40, 40));
+                    let delete = egui::Button::new(RichText::new("BORRAR").monospace().size(12.0).strong().color(Color32::WHITE))
+                        .fill(Color32::from_rgb(170, 40, 40))
+                        .min_size(egui::vec2(0.0, 30.0));
                     confirmed = ui.add(delete).clicked();
-                    cancelled = ui.button("Cancelar").clicked();
+                    cancelled = ui.add(theme::secondary("Cancelar")).clicked();
                 });
             });
         if confirmed {
@@ -541,176 +550,183 @@ impl PlaylistApp {
             .resizable(true)
             .default_width(520.0)
             .show(ctx, |ui| {
-                ui.heading("Inteligencia artificial");
-                egui::Grid::new("llm").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                    ui.label("Proveedor:");
-                    let before = draft.config.llm.provider;
-                    egui::ComboBox::from_id_salt("provider")
-                        .selected_text(before.label())
-                        .width(280.0)
-                        .show_ui(ui, |ui| {
-                            for p in Provider::ALL {
-                                ui.selectable_value(&mut draft.config.llm.provider, p, p.label());
-                            }
-                        });
-                    let now = draft.config.llm.provider;
-                    if now != before {
-                        let (base, model) = now.preset();
-                        draft.config.llm.base_url = base.into();
-                        draft.config.llm.model = model.into();
-                        draft.api_key = config::load_api_key(now);
-                    }
-                    ui.end_row();
-
-                    ui.label("URL base:");
-                    ui.add(egui::TextEdit::singleline(&mut draft.config.llm.base_url).desired_width(320.0));
-                    ui.end_row();
-
-                    ui.label("Modelo:");
-                    ui.add(egui::TextEdit::singleline(&mut draft.config.llm.model).desired_width(320.0));
-                    ui.end_row();
-
-                    if draft.config.llm.provider.needs_api_key() {
-                        ui.label("API key:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut draft.api_key)
-                                .password(true)
-                                .hint_text("Se guarda en el Administrador de credenciales de Windows")
-                                .desired_width(320.0),
-                        );
-                        ui.end_row();
-                    }
-                });
-
-                ui.separator();
-                ui.heading("yt-dlp (búsqueda y descargas)");
-                ui.horizontal(|ui| {
-                    ui.label("Ejecutable:");
-                    ui.add(egui::TextEdit::singleline(&mut draft.config.ytdlp_path).desired_width(220.0));
-                    if ui.add_enabled(!self.ytdlp_busy, egui::Button::new("Comprobar")).clicked() {
-                        check_ytdlp = true;
-                    }
-                    let idle = !self.ytdlp_busy && !self.running && self.files_task.is_none();
-                    if ui
-                        .add_enabled(idle, egui::Button::new("Actualizar yt-dlp"))
-                        .on_hover_text("Usa pip, winget o yt-dlp -U según cómo esté instalado")
-                        .clicked()
-                    {
-                        update_ytdlp = true;
-                    }
-                });
-                match &self.ytdlp_status {
-                    _ if self.ytdlp_busy => {
-                        ui.spinner();
-                    }
-                    Some(Ok(v)) => {
-                        ui.weak(format!("Versión instalada: {v}. YouTube cambia a menudo: si falla la búsqueda, actualiza."));
-                    }
-                    Some(Err(e)) => {
-                        ui.colored_label(Color32::from_rgb(220, 120, 0), e);
-                        ui.weak("Instálalo con:  winget install yt-dlp");
-                    }
-                    None => {}
-                }
-
-                ui.horizontal(|ui| {
-                    ui.label("Carpeta de descargas:");
-                    ui.add(egui::TextEdit::singleline(&mut draft.config.download_dir).desired_width(300.0));
-                });
-                ui.weak("Cada playlist se guarda en su propia subcarpeta.");
-                let has_ffmpeg = matches!(self.ffmpeg_status, Some(Ok(_)));
-                ui.horizontal(|ui| {
-                    ui.label("Formato de audio:");
-                    egui::ComboBox::from_id_salt("audio_format")
-                        .selected_text(draft.config.audio_format.label())
-                        .width(240.0)
-                        .show_ui(ui, |ui| {
-                            for f in AudioFormat::ALL {
-                                ui.add_enabled_ui(has_ffmpeg || !f.needs_ffmpeg(), |ui| {
-                                    ui.selectable_value(&mut draft.config.audio_format, f, f.label())
-                                        .on_disabled_hover_text("Necesita ffmpeg");
-                                });
-                            }
-                        });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("ffmpeg:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut draft.config.ffmpeg_path)
-                            .hint_text("Vacío = buscarlo automáticamente")
-                            .desired_width(220.0),
-                    );
-                    if ui.add_enabled(!self.ffmpeg_busy, egui::Button::new("Comprobar")).clicked() {
-                        check_ffmpeg = true;
-                    }
-                    let label = if has_ffmpeg { "Actualizar ffmpeg" } else { "Instalar ffmpeg" };
-                    if ui
-                        .add_enabled(!self.ffmpeg_busy && self.files_task.is_none(), egui::Button::new(label))
-                        .on_hover_text("Usa winget (paquete Gyan.FFmpeg)")
-                        .clicked()
-                    {
-                        update_ffmpeg = true;
-                    }
-                });
-                match &self.ffmpeg_status {
-                    _ if self.ffmpeg_busy => {
-                        ui.spinner();
-                    }
-                    Some(Ok(v)) => {
-                        ui.weak(format!("ffmpeg {v}: permite MP3 y añade carátula y etiquetas a las descargas."));
-                    }
-                    Some(Err(e)) => {
-                        ui.colored_label(Color32::from_rgb(220, 120, 0), e);
-                    }
-                    None => {}
-                }
-
-                ui.separator();
-                ui.heading("YouTube");
-                ui.horizontal(|ui| {
-                    ui.label("client_secret.json:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut draft.config.client_secret_path)
-                            .hint_text(r"C:\ruta\client_secret.json")
-                            .desired_width(300.0),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    let can_connect = !self.youtube_busy && !draft.config.client_secret_path.trim().is_empty();
-                    if ui.add_enabled(can_connect, egui::Button::new("Conectar con YouTube")).clicked() {
-                        connect_youtube = true;
-                    }
-                    match &self.youtube_status {
-                        _ if self.youtube_busy => {
-                            ui.spinner();
-                            ui.label("Esperando autorización en el navegador…");
+                // Los botones Guardar/Cancelar quedan fuera del scroll, siempre a la vista.
+                let max_height = (ui.ctx().content_rect().height() - 150.0).max(200.0);
+                egui::ScrollArea::vertical().max_height(max_height).show(ui, |ui| {
+                    theme::section(ui, "01", "Inteligencia artificial");
+                    egui::Grid::new("llm").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        ui.label("Proveedor:");
+                        let before = draft.config.llm.provider;
+                        egui::ComboBox::from_id_salt("provider")
+                            .selected_text(before.label())
+                            .width(280.0)
+                            .show_ui(ui, |ui| {
+                                for p in Provider::ALL {
+                                    ui.selectable_value(&mut draft.config.llm.provider, p, p.label());
+                                }
+                            });
+                        let now = draft.config.llm.provider;
+                        if now != before {
+                            let (base, model) = now.preset();
+                            draft.config.llm.base_url = base.into();
+                            draft.config.llm.model = model.into();
+                            draft.api_key = config::load_api_key(now);
                         }
-                        Some(Ok(channel)) => {
-                            ui.label(format!("Conectado: {channel}"));
+                        ui.end_row();
+
+                        ui.label("URL base:");
+                        ui.add(egui::TextEdit::singleline(&mut draft.config.llm.base_url).desired_width(320.0));
+                        ui.end_row();
+
+                        ui.label("Modelo:");
+                        ui.add(egui::TextEdit::singleline(&mut draft.config.llm.model).desired_width(320.0));
+                        ui.end_row();
+
+                        if draft.config.llm.provider.needs_api_key() {
+                            ui.label("API key:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut draft.api_key)
+                                    .password(true)
+                                    .hint_text("Se guarda en el Administrador de credenciales de Windows")
+                                    .desired_width(320.0),
+                            );
+                            ui.end_row();
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    theme::section(ui, "02", "yt-dlp (búsqueda y descargas)");
+                    ui.horizontal(|ui| {
+                        ui.label("Ejecutable:");
+                        ui.add(egui::TextEdit::singleline(&mut draft.config.ytdlp_path).desired_width(220.0));
+                        if ui.add_enabled(!self.ytdlp_busy, theme::secondary("Comprobar")).clicked() {
+                            check_ytdlp = true;
+                        }
+                        let idle = !self.ytdlp_busy && !self.running && self.files_task.is_none();
+                        if ui
+                            .add_enabled(idle, theme::secondary("Actualizar yt-dlp"))
+                            .on_hover_text("Usa pip, winget o yt-dlp -U según cómo esté instalado")
+                            .clicked()
+                        {
+                            update_ytdlp = true;
+                        }
+                    });
+                    match &self.ytdlp_status {
+                        _ if self.ytdlp_busy => {
+                            ui.spinner();
+                        }
+                        Some(Ok(v)) => {
+                            ui.weak(format!("Versión instalada: {v}. YouTube cambia a menudo: si falla la búsqueda, actualiza."));
                         }
                         Some(Err(e)) => {
-                            ui.colored_label(Color32::from_rgb(220, 120, 0), e);
+                            ui.colored_label(theme::WARN, e);
+                            ui.weak("Instálalo con:  winget install yt-dlp");
                         }
                         None => {}
                     }
-                });
-                egui::CollapsingHeader::new("¿Cómo consigo el client_secret.json?").show(ui, |ui| {
-                    ui.label(
-                        "1. Entra en console.cloud.google.com y crea un proyecto.\n\
-                         2. APIs y servicios → Biblioteca → activa \"YouTube Data API v3\".\n\
-                         3. Pantalla de consentimiento OAuth → tipo Externo → añade tu cuenta en \"Usuarios de prueba\".\n\
-                         4. Credenciales → Crear credenciales → ID de cliente OAuth → tipo \"App de escritorio\".\n\
-                         5. Descarga el JSON y escribe aquí su ruta.\n\n\
-                         En modo de prueba, Google pide volver a autorizar cada 7 días: la app abrirá el navegador cuando haga falta.",
-                    );
+
+                    ui.add_space(8.0);
+                    theme::section(ui, "03", "Descargas");
+                    ui.horizontal(|ui| {
+                        ui.label("Carpeta de descargas:");
+                        ui.add(egui::TextEdit::singleline(&mut draft.config.download_dir).desired_width(300.0));
+                    });
+                    ui.weak("Cada playlist se guarda en su propia subcarpeta.");
+                    let has_ffmpeg = matches!(self.ffmpeg_status, Some(Ok(_)));
+                    ui.horizontal(|ui| {
+                        ui.label("Formato de audio:");
+                        egui::ComboBox::from_id_salt("audio_format")
+                            .selected_text(draft.config.audio_format.label())
+                            .width(240.0)
+                            .show_ui(ui, |ui| {
+                                for f in AudioFormat::ALL {
+                                    ui.add_enabled_ui(has_ffmpeg || !f.needs_ffmpeg(), |ui| {
+                                        ui.selectable_value(&mut draft.config.audio_format, f, f.label())
+                                            .on_disabled_hover_text("Necesita ffmpeg");
+                                    });
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("ffmpeg:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.config.ffmpeg_path)
+                                .hint_text("Vacío = buscarlo automáticamente")
+                                .desired_width(220.0),
+                        );
+                        if ui.add_enabled(!self.ffmpeg_busy, theme::secondary("Comprobar")).clicked() {
+                            check_ffmpeg = true;
+                        }
+                        let label = if has_ffmpeg { "Actualizar ffmpeg" } else { "Instalar ffmpeg" };
+                        if ui
+                            .add_enabled(!self.ffmpeg_busy && self.files_task.is_none(), theme::secondary(label))
+                            .on_hover_text("Usa winget (paquete Gyan.FFmpeg)")
+                            .clicked()
+                        {
+                            update_ffmpeg = true;
+                        }
+                    });
+                    match &self.ffmpeg_status {
+                        _ if self.ffmpeg_busy => {
+                            ui.spinner();
+                        }
+                        Some(Ok(v)) => {
+                            ui.weak(format!("ffmpeg {v}: permite MP3 y añade carátula y etiquetas a las descargas."));
+                        }
+                        Some(Err(e)) => {
+                            ui.colored_label(theme::WARN, e);
+                        }
+                        None => {}
+                    }
+
+                    ui.add_space(8.0);
+                    theme::section(ui, "04", "YouTube");
+                    ui.horizontal(|ui| {
+                        ui.label("client_secret.json:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.config.client_secret_path)
+                                .hint_text(r"C:\ruta\client_secret.json")
+                                .desired_width(300.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        let can_connect = !self.youtube_busy && !draft.config.client_secret_path.trim().is_empty();
+                        if ui.add_enabled(can_connect, theme::secondary("Conectar con YouTube")).clicked() {
+                            connect_youtube = true;
+                        }
+                        match &self.youtube_status {
+                            _ if self.youtube_busy => {
+                                ui.spinner();
+                                ui.label("Esperando autorización en el navegador…");
+                            }
+                            Some(Ok(channel)) => {
+                                ui.label(theme::meta("CONECTADO"));
+                                ui.label(theme::readout(channel.as_str()));
+                            }
+                            Some(Err(e)) => {
+                                ui.colored_label(theme::WARN, e);
+                            }
+                            None => {}
+                        }
+                    });
+                    egui::CollapsingHeader::new("¿Cómo consigo el client_secret.json?").show(ui, |ui| {
+                        ui.label(
+                            "1. Entra en console.cloud.google.com y crea un proyecto.\n\
+                             2. APIs y servicios → Biblioteca → activa \"YouTube Data API v3\".\n\
+                             3. Pantalla de consentimiento OAuth → tipo Externo → añade tu cuenta en \"Usuarios de prueba\".\n\
+                             4. Credenciales → Crear credenciales → ID de cliente OAuth → tipo \"App de escritorio\".\n\
+                             5. Descarga el JSON y escribe aquí su ruta.\n\n\
+                             En modo de prueba, Google pide volver a autorizar cada 7 días: la app abrirá el navegador cuando haga falta.",
+                        );
+                    });
                 });
 
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button(RichText::new("Guardar").strong()).clicked() {
+                    if ui.add(theme::primary("Guardar")).clicked() {
                         action = SettingsAction::Save;
                     }
-                    if ui.button("Cancelar").clicked() {
+                    if ui.add(theme::secondary("Cancelar")).clicked() {
                         action = SettingsAction::Cancel;
                     }
                 });
@@ -770,21 +786,21 @@ impl eframe::App for PlaylistApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_events();
 
-        egui::Panel::top("top").show(ui, |ui| {
-            ui.add_space(4.0);
-            self.top_bar(ui);
-            ui.add_space(4.0);
-        });
+        let bar = |fill| egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(14, 8));
+        egui::Panel::top("top").frame(bar(theme::BG)).show(ui, |ui| self.top_bar(ui));
+        egui::Panel::bottom("status").frame(bar(theme::INSET)).show(ui, |ui| self.status_bar(ui));
         egui::Panel::left("history")
             .resizable(true)
-            .default_size(200.0)
+            .default_size(220.0)
+            .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 8)))
             .show(ui, |ui| self.history_panel(ui));
-        egui::CentralPanel::default().show(ui, |ui| {
-            self.form(ui);
-            self.progress_view(ui);
-            ui.separator();
-            self.playlist_view(ui);
-        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(22, 14)))
+            .show(ui, |ui| {
+                self.form(ui);
+                self.progress_view(ui);
+                self.playlist_view(ui);
+            });
 
         let ctx = ui.ctx().clone();
         self.settings_window(&ctx);
