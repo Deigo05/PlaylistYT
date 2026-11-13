@@ -86,6 +86,18 @@ pub struct Config {
     pub llm: LlmConfig,
     pub ytdlp_path: String,
     pub client_secret_path: String,
+    /// Carpeta donde se guardan las descargas (una subcarpeta por playlist).
+    #[serde(default = "default_download_dir")]
+    pub download_dir: String,
+}
+
+/// %USERPROFILE%\Music\PlaylistYT
+fn default_download_dir() -> String {
+    dirs::audio_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("PlaylistYT")
+        .to_string_lossy()
+        .into_owned()
 }
 
 impl Default for Config {
@@ -99,6 +111,7 @@ impl Default for Config {
             },
             ytdlp_path: "yt-dlp".into(),
             client_secret_path: String::new(),
+            download_dir: default_download_dir(),
         }
     }
 }

@@ -3,6 +3,7 @@
 
 use crate::agent::{self, MAX_SONGS, Request};
 use crate::config::{self, Config, Provider};
+use crate::download;
 use crate::history::{self, PlaylistResult};
 use crate::quota::{self, COST_DELETE, DAILY_LIMIT, Quota, playlist_cost};
 use crate::worker::{Command, Event, Worker};
@@ -45,6 +46,14 @@ pub struct PlaylistApp {
     confirm_delete: Option<String>,
     /// Playlist (id) que se está borrando.
     deleting: Option<String>,
+    /// Descarga o limpieza de nombres en curso: (id de la playlist, texto a mostrar).
+    files_task: Option<(String, &'static str)>,
+}
+
+enum FilesAction {
+    Download,
+    CleanNames,
+    OpenFolder,
 }
 
 impl PlaylistApp {
@@ -80,6 +89,7 @@ impl PlaylistApp {
             youtube_busy,
             confirm_delete: None,
             deleting: None,
+            files_task: None,
         }
     }
 
@@ -108,6 +118,12 @@ impl PlaylistApp {
                     match result {
                         Ok(()) => self.remove_from_history(&playlist_id),
                         Err(msg) => self.error = Some(format!("No se pudo borrar la playlist: {msg}")),
+                    }
+                }
+                Event::FilesTaskDone(result) => {
+                    self.files_task = None;
+                    if let Err(msg) = result {
+                        self.error = Some(msg);
                     }
                 }
                 Event::YoutubeConnected(result) => {
@@ -364,6 +380,64 @@ impl PlaylistApp {
                 format!("No encontradas o no añadidas: {}", p.missing.join(", ")),
             );
         }
+        ui.add_space(4.0);
+
+        let dir = download::playlist_dir(&self.config.download_dir, p);
+        let downloaded = download::Manifest::load(&dir).downloaded(&dir, &p.items);
+        let busy = self.running || self.files_task.is_some();
+        let mut files_action = None;
+        ui.horizontal(|ui| {
+            match &self.files_task {
+                Some((id, label)) if *id == p.playlist_id => {
+                    ui.spinner();
+                    ui.label(*label);
+                }
+                _ => {
+                    if ui
+                        .add_enabled(!busy && downloaded < p.items.len(), egui::Button::new("Descargar audio"))
+                        .on_hover_text("Guarda el audio de cada canción con yt-dlp (m4a, sin convertir)")
+                        .clicked()
+                    {
+                        files_action = Some(FilesAction::Download);
+                    }
+                    let llm_ready = !self.config.llm.provider.needs_api_key() || !self.api_key.trim().is_empty();
+                    if ui
+                        .add_enabled(!busy && downloaded > 0 && llm_ready, egui::Button::new("Limpiar nombres con IA"))
+                        .on_hover_text("Renombra los archivos a \"Cantante - Canción\"")
+                        .clicked()
+                    {
+                        files_action = Some(FilesAction::CleanNames);
+                    }
+                }
+            }
+            if ui.button("Abrir carpeta").clicked() {
+                files_action = Some(FilesAction::OpenFolder);
+            }
+            ui.weak(format!("{downloaded} de {} descargadas", p.items.len()));
+        });
+        ui.weak("Descarga solo música sobre la que tengas derechos.");
+        match files_action {
+            Some(FilesAction::Download) => {
+                self.progress.clear();
+                self.error = None;
+                self.files_task = Some((p.playlist_id.clone(), "Descargando…"));
+                self.worker.send(Command::Download(self.config.clone(), p.clone()));
+            }
+            Some(FilesAction::CleanNames) => {
+                self.progress.clear();
+                self.error = None;
+                self.files_task = Some((p.playlist_id.clone(), "Limpiando nombres…"));
+                self.worker
+                    .send(Command::CleanNames(self.config.clone(), self.api_key.clone(), p.clone()));
+            }
+            Some(FilesAction::OpenFolder) => {
+                let opened = std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|_| open::that(&dir).map_err(|e| e.to_string()));
+                if let Err(e) = opened {
+                    self.error = Some(format!("No se pudo abrir {}: {e}", dir.display()));
+                }
+            }
+            None => {}
+        }
         ui.add_space(6.0);
 
         TableBuilder::new(ui)
@@ -501,7 +575,7 @@ impl PlaylistApp {
                 });
 
                 ui.separator();
-                ui.heading("yt-dlp (búsqueda de canciones)");
+                ui.heading("yt-dlp (búsqueda y descargas)");
                 ui.horizontal(|ui| {
                     ui.label("Ejecutable:");
                     ui.add(egui::TextEdit::singleline(&mut draft.config.ytdlp_path).desired_width(220.0));
@@ -525,6 +599,12 @@ impl PlaylistApp {
                     }
                     None => {}
                 }
+
+                ui.horizontal(|ui| {
+                    ui.label("Carpeta de descargas:");
+                    ui.add(egui::TextEdit::singleline(&mut draft.config.download_dir).desired_width(300.0));
+                });
+                ui.weak("Cada playlist se guarda en su propia subcarpeta.");
 
                 ui.separator();
                 ui.heading("YouTube");

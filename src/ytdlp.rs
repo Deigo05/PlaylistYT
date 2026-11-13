@@ -1,7 +1,8 @@
-//! Búsqueda de vídeos con yt-dlp (no gasta cuota de la YouTube Data API).
+//! yt-dlp: búsqueda de vídeos (no gasta cuota de la YouTube Data API) y descarga de audio.
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +121,36 @@ fn encode_query(q: &str) -> String {
         }
     }
     out
+}
+
+/// Descarga el audio de un vídeo en `dir` como `{id}.{ext}` y devuelve la ruta del archivo.
+/// Sin ffmpeg no se convierte: se guarda la mejor pista de audio m4a (o la mejor que haya).
+pub async fn download_audio(bin: &str, video_id: &str, dir: &Path) -> Result<PathBuf> {
+    let url = format!("https://www.youtube.com/watch?v={video_id}");
+    let dir_s = dir.to_string_lossy();
+    run(
+        bin,
+        &[
+            &url,
+            "-f",
+            "bestaudio[ext=m4a]/bestaudio",
+            "--no-playlist",
+            "--no-warnings",
+            "--no-progress",
+            "-P",
+            &dir_s,
+            "-o",
+            "%(id)s.%(ext)s",
+        ],
+    )
+    .await?;
+    std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| {
+            p.file_stem().is_some_and(|s| s == video_id)
+                && p.extension().is_some_and(|e| e != "part" && e != "ytdl")
+        })
+        .with_context(|| format!("yt-dlp terminó pero no aparece el archivo de {video_id}"))
 }
 
 pub async fn version(bin: &str) -> Result<String> {

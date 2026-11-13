@@ -3,7 +3,9 @@
 
 use crate::agent::{self, Request};
 use crate::config::Config;
+use crate::download;
 use crate::history::PlaylistResult;
+use crate::llm::LlmClient;
 use crate::quota::Quota;
 use crate::youtube::YouTube;
 use crate::ytdlp;
@@ -18,6 +20,10 @@ pub enum Command {
     UpdateYtdlp(String),
     /// Borra de YouTube la playlist con ese id.
     DeletePlaylist(Config, String),
+    /// Descarga con yt-dlp el audio de la playlist.
+    Download(Config, PlaylistResult),
+    /// Renombra con el LLM los archivos descargados de la playlist.
+    CleanNames(Config, String, PlaylistResult),
 }
 
 pub enum Event {
@@ -28,6 +34,8 @@ pub enum Event {
         playlist_id: String,
         result: Result<(), String>,
     },
+    /// Fin de una descarga o de una limpieza de nombres.
+    FilesTaskDone(Result<String, String>),
     YoutubeConnected(Result<String, String>),
     YtdlpVersion(Result<String, String>),
     YtdlpUpdated(Result<String, String>),
@@ -77,11 +85,15 @@ impl Worker {
     }
 }
 
+fn progress_for(emit: &Arc<impl Fn(Event) + Send + Sync + 'static>) -> agent::Progress {
+    let emit = emit.clone();
+    Arc::new(move |msg| emit(Event::Progress(msg)))
+}
+
 async fn handle(cmd: Command, quota: Arc<Mutex<Quota>>, emit: Arc<impl Fn(Event) + Send + Sync + 'static>) {
     match cmd {
         Command::Create(req) => {
-            let progress_emit = emit.clone();
-            let progress: agent::Progress = Arc::new(move |msg| progress_emit(Event::Progress(msg)));
+            let progress = progress_for(&emit);
             match agent::create_playlist(req, quota, progress).await {
                 Ok(result) => emit(Event::Done(result)),
                 Err(e) => emit(Event::Failed(format!("{e:#}"))),
@@ -110,6 +122,23 @@ async fn handle(cmd: Command, quota: Arc<Mutex<Quota>>, emit: Arc<impl Fn(Event)
             .await
             .map_err(|e| format!("{e:#}"));
             emit(Event::PlaylistDeleted { playlist_id, result });
+        }
+        Command::Download(config, playlist) => {
+            let progress = progress_for(&emit);
+            let result = download::download_playlist(config.ytdlp_path.trim(), &playlist, &config.download_dir, progress)
+                .await
+                .map_err(|e| format!("{e:#}"));
+            emit(Event::FilesTaskDone(result));
+        }
+        Command::CleanNames(config, api_key, playlist) => {
+            let progress = progress_for(&emit);
+            let result = async {
+                let llm = LlmClient::new(config.llm.clone(), api_key)?;
+                download::clean_names(&llm, &playlist, &config.download_dir, progress).await
+            }
+            .await
+            .map_err(|e| format!("{e:#}"));
+            emit(Event::FilesTaskDone(result));
         }
     }
 }

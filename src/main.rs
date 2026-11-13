@@ -3,6 +3,7 @@
 mod agent;
 mod app;
 mod config;
+mod download;
 mod history;
 mod llm;
 mod quota;

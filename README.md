@@ -25,6 +25,7 @@ Necesitas tres cosas: **una API key de un LLM**, **yt-dlp** y **un cliente OAuth
   ```
   winget install yt-dlp
   ```
+  Mantenlo al día: si YouTube cambia algo, las búsquedas o descargas fallan (por ejemplo con "HTTP Error 403"). Actualiza con `winget upgrade yt-dlp` o, si lo instalaste con pip, `python -m pip install -U "yt-dlp[default]"`.
 
 ### 2. Compilar y abrir la app
 ```
@@ -67,7 +68,15 @@ En modo de prueba Google caduca el permiso cada 7 días; cuando pase, la app vue
 ### 6. Crear una playlist
 Escribe el cantante, elige el número de canciones (1–50) y pulsa **Crear playlist**. Al terminar verás el link (con botón de copiar) y la tabla de canciones con su tipo: audio original, audio oficial o vídeo oficial. Las playlists anteriores quedan en el historial de la izquierda.
 
-### 7. Borrar una playlist
+### 7. Descargar el audio y ordenar los nombres
+Descarga solo música sobre la que tengas derechos.
+
+1. En **Ajustes → Carpeta de descargas** elige dónde guardar (por defecto `Música\PlaylistYT`). Cada playlist va a su propia subcarpeta.
+2. Pulsa **Descargar audio**. yt-dlp guarda cada canción en m4a (la pista de audio original, sin convertir; no hace falta ffmpeg). Si se corta, al volver a pulsar solo descarga las que falten.
+3. Pulsa **Limpiar nombres con IA**. El LLM renombra los archivos a `Cantante - Canción` (por ejemplo `Tom Odell - Half As Good As You (feat. Alice Merton).m4a`).
+4. **Abrir carpeta** te lleva directamente a los archivos.
+
+### 8. Borrar una playlist
 Selecciónala en el historial y pulsa **Borrar playlist** junto al link. Tras confirmar, se borra de tu cuenta de YouTube y del historial (cuesta 50 unidades; no se puede deshacer). Si ya la habías borrado a mano en YouTube, la app solo la quita del historial.
 
 ### Cuota de YouTube
