@@ -2,6 +2,10 @@
 name = "playlist_yt"
 version = "0.1.0"
 edition = "2024"
+description = "App de escritorio que crea playlists de YouTube con las canciones más populares de un cantante usando un agente de IA"
+license = "MIT"
+repository = "https://github.com/Deigo05/PlaylistYT"
+readme = "README.md"
 
 [[bin]]
 name = "PlaylistYT"
