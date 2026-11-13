@@ -45,7 +45,7 @@ La primera vez Windows puede mostrar "Windows protegió su PC", porque el ejecut
 ¿Prefieres compilarla tú? Mira [Compilar desde el código](#compilar-desde-el-código).
 
 ### 2. Instalar yt-dlp y ffmpeg desde la app
-Al abrir la app por primera vez, si falta alguna herramienta aparece el aviso **Faltan herramientas**. Pulsa **Instalar lo que falta**: la app las instala con winget (incluido en Windows 10 y 11) y las detecta sola en uno o dos minutos, sin reiniciar. Al terminar, la barra inferior muestra en verde la versión de yt-dlp y la de ffmpeg.
+Al abrir la app por primera vez, si falta alguna herramienta aparece el aviso **Faltan herramientas**. Pulsa **Instalar lo que falta**: la app las instala con winget (incluido en Windows 10 y 11) y las detecta sola en uno o dos minutos, sin reiniciar. Al terminar, la tarjeta **Herramientas** (a la derecha) muestra en verde yt-dlp y ffmpeg con su versión.
 
 Si lo prefieres a mano, en PowerShell: `winget install yt-dlp.yt-dlp` y `winget install Gyan.FFmpeg`.
 
@@ -77,14 +77,14 @@ Cada usuario crea su propio cliente OAuth; la app no trae ninguno. Son unos 10 m
    - elige la cuenta que añadiste como usuario de prueba;
    - en el aviso "Google no verificó esta app" pulsa **Continuar** (es tu propia app en modo prueba);
    - concede el permiso de YouTube.
-3. La barra inferior de la app mostrará tu canal en verde.
+3. Arriba a la derecha aparecerá tu canal con un punto verde.
 
 En modo de prueba Google caduca el permiso cada 7 días; cuando pase, la app vuelve a abrir el navegador para autorizar.
 
-**Comprobación final:** en la barra inferior deben verse en verde la versión de yt-dlp, la de ffmpeg y tu canal de YouTube. Si alguno sale en naranja, pasa el ratón por encima para ver el motivo.
+**Comprobación final:** en la tarjeta **Herramientas** deben verse en verde yt-dlp y ffmpeg, y arriba a la derecha tu canal de YouTube. Si algo sale en ámbar, pasa el ratón por encima para ver el motivo.
 
 ### 6. Crear una playlist
-Escribe el cantante, elige el número de canciones y pulsa **Crear playlist**. En **Progreso del agente** verás cada paso. Al terminar aparecen el link (con botón **Copiar link**) y la tabla de canciones con su tipo: audio original, audio oficial o vídeo oficial. Las playlists anteriores quedan en el historial de la izquierda.
+En **Nueva playlist** escribe el cantante, elige el número de canciones y pulsa **Crear playlist**. En **Progreso** verás los cuatro pasos del agente. Al terminar se abre la playlist: su link, la tabla de canciones con su tipo (audio original, audio oficial o vídeo oficial) y, a la derecha, sus datos y el botón **Copiar link**. Todas las playlists quedan en la barra lateral.
 
 ### 7. Descargar el audio
 Descarga solo música sobre la que tengas derechos.
@@ -97,10 +97,10 @@ Descarga solo música sobre la que tengas derechos.
 4. **Abrir carpeta** te lleva directamente a los archivos.
 
 ### 8. Borrar una playlist
-Selecciónala en el historial y pulsa **Borrar playlist**. Tras confirmar, se borra de tu cuenta de YouTube y del historial (cuesta 50 unidades; no se puede deshacer). Si ya la habías borrado a mano en YouTube, la app solo la quita del historial. Los archivos descargados no se tocan.
+Selecciónala en la barra lateral y pulsa **Borrar playlist** (abajo, en el panel derecho). Tras confirmar, se borra de tu cuenta de YouTube y del historial (cuesta 50 unidades; no se puede deshacer). Si ya la habías borrado a mano en YouTube, la app solo la quita del historial. Los archivos descargados no se tocan.
 
 ### Cuota de YouTube
-Google da 10.000 unidades al día por proyecto. Una playlist de N canciones cuesta 50 + 50·N (10 canciones = 550 u., unas 18 playlists al día); borrarla, 50. La barra inferior lleva la cuenta y muestra cuándo se reinicia (medianoche, hora del Pacífico). Es un contador local; el dato oficial está en Google Cloud Console → **APIs y servicios → Cuotas**.
+Google da 10.000 unidades al día por proyecto. Una playlist de N canciones cuesta 50 + 50·N (10 canciones = 550 u., unas 18 playlists al día); borrarla, 50. La tarjeta **Cuota de YouTube hoy** lleva la cuenta y muestra cuándo se reinicia (medianoche, hora del Pacífico). Es un contador local; el dato oficial está en Google Cloud Console → **APIs y servicios → Cuotas**.
 
 ### Problemas frecuentes
 | Síntoma | Solución |
@@ -112,7 +112,7 @@ Google da 10.000 unidades al día por proyecto. Una playlist de N canciones cues
 | No deja elegir MP3 | Falta ffmpeg: **Ajustes → Instalar ffmpeg**, o elige M4A. |
 | Error 401/403 del LLM | API key incorrecta o sin saldo. |
 | "No encontradas: …" con artistas poco conocidos | El LLM inventó títulos que no existen; la app los sustituye por las canciones más escuchadas del artista. |
-| "Cuota agotada" | Espera al reinicio que indica la barra inferior. |
+| "Cuota agotada" | Espera al reinicio que indica la tarjeta de cuota. |
 
 ## Privacidad
 Nada sensible se guarda dentro de la carpeta del proyecto:
@@ -142,7 +142,7 @@ cargo clippy --all-targets
 |---|---|
 | `src/main.rs` | Arranque de la ventana. |
 | `src/app.rs` | Interfaz: formulario, progreso, playlist, historial, ajustes. |
-| `src/theme.rs` | Tema visual (colores, botones, secciones numeradas). |
+| `src/theme.rs` | Tema visual (colores, tarjetas, botones, pasos de progreso). |
 | `src/worker.rs` | Hilo con el runtime de tokio; recibe órdenes de la interfaz y devuelve eventos. |
 | `src/agent.rs` | El agente: pide canciones al LLM, busca, elige y crea la playlist. |
 | `src/ranking.rs` | Heurística que filtra y puntúa los resultados de búsqueda. |

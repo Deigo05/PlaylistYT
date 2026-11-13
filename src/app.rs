@@ -190,74 +190,76 @@ impl PlaylistApp {
         };
     }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
+    fn open_settings(&mut self) {
+        if self.settings.is_none() {
+            self.settings = Some(SettingsDraft {
+                config: self.config.clone(),
+                api_key: self.api_key.clone(),
+            });
+        }
+    }
+
+    /// Franja superior: nombre de la app, lo que se está viendo y el estado de YouTube.
+    fn top_bar(&mut self, ui: &mut egui::Ui, playlist: Option<&PlaylistResult>) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("PLAYLISTYT").monospace().size(15.0).strong().color(theme::TEXT));
-            ui.label(theme::meta("/  AGENTE DE PLAYLISTS"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(theme::secondary("Ajustes")).clicked() && self.settings.is_none() {
-                    self.settings = Some(SettingsDraft {
-                        config: self.config.clone(),
-                        api_key: self.api_key.clone(),
+            ui.label(theme::semibold("PlaylistYT", 13.5));
+            ui.add_space(6.0);
+            let context = playlist.map_or("nueva playlist", |p| p.title.as_str());
+            ui.label(RichText::new(context).monospace().size(11.5).color(theme::MUTED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match &self.youtube_status {
+                _ if self.youtube_busy => {
+                    theme::pill(ui, theme::MUTED, "Conectando con YouTube…");
+                }
+                Some(Ok(channel)) => {
+                    theme::pill(ui, theme::GREEN, channel).on_hover_text("Cuenta de YouTube conectada");
+                }
+                Some(Err(e)) => {
+                    theme::pill(ui, theme::WARN, "YouTube sin conectar").on_hover_text(e);
+                }
+                None => {
+                    theme::pill(ui, theme::WARN, "YouTube sin conectar").on_hover_text("Conéctalo en Ajustes");
+                }
+            });
+        });
+    }
+
+    /// Barra lateral: nueva playlist, las ya creadas y los ajustes.
+    fn sidebar(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.y = 3.0;
+        if theme::sidebar_item(ui, self.selected.is_none(), "+   Nueva playlist", None).clicked() {
+            self.selected = None;
+        }
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(theme::meta("Playlists"));
+        });
+        ui.add_space(2.0);
+        let list_height = (ui.available_height() - 46.0).max(40.0);
+        egui::ScrollArea::vertical()
+            .max_height(list_height)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if self.history.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(theme::meta("Aún no hay ninguna. Las que crees aparecen aquí."));
                     });
                 }
-            });
-        });
-    }
-
-    /// Barra inferior con el estado de las herramientas y la cuota.
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
-        // "9.0.2-full_build-www.gyan.dev" → "9.0.2"
-        let ffmpeg = self
-            .ffmpeg_status
-            .as_ref()
-            .map(|r| r.as_ref().map(|v| v.split('-').next().unwrap_or(v).to_string()).map_err(Clone::clone));
-        ui.horizontal(|ui| {
-            theme::status(ui, "yt-dlp", self.ytdlp_busy, self.ytdlp_status.as_ref(), "no disponible");
-            ui.separator();
-            theme::status(ui, "ffmpeg", self.ffmpeg_busy, ffmpeg.as_ref(), "no disponible");
-            ui.separator();
-            theme::status(ui, "YouTube", self.youtube_busy, self.youtube_status.as_ref(), "sin conectar");
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (used, reset) = {
-                    let mut q = self.quota.lock().unwrap();
-                    q.refresh(Utc::now());
-                    (q.used(), quota::next_reset(Utc::now()))
-                };
-                ui.label(theme::meta(format!("REINICIO {}", reset.format("%H:%M"))));
-                let resp = ui.label(theme::readout(format!("{} / {}", thousands(used), thousands(DAILY_LIMIT))));
-                ui.label(theme::meta("CUOTA"));
-                resp.on_hover_text(
-                    "Contador local: suma el coste de cada llamada que hace esta app. \
-                     El dato oficial está en Google Cloud Console → Cuotas.",
-                );
-            });
-        });
-    }
-
-    fn history_panel(&mut self, ui: &mut egui::Ui) {
-        theme::panel_header(ui, &format!("Historial  ·  {}", self.history.len()));
-        if self.history.is_empty() {
-            ui.label(theme::meta("Aún no has creado playlists."));
-        }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (i, p) in self.history.iter().enumerate() {
-                let selected = self.selected == Some(i);
-                let mut job = egui::text::LayoutJob::default();
-                let title_color = if selected { theme::TEXT } else { Color32::from_rgb(214, 213, 210) };
-                job.append(&p.title, 0.0, egui::TextFormat::simple(egui::FontId::proportional(13.5), title_color));
-                job.append(
-                    &format!("\n{} · {} CANCIONES", p.created_at.format("%d/%m/%Y"), p.items.len()),
-                    0.0,
-                    egui::TextFormat::simple(egui::FontId::monospace(10.0), theme::MUTED),
-                );
-                let button = egui::Button::selectable(selected, job).min_size(egui::vec2(ui.available_width(), 40.0));
-                if ui.add(button).clicked() {
-                    self.selected = Some(i);
+                for (i, p) in self.history.iter().enumerate() {
+                    // Verde: están todas las canciones. Ámbar: alguna no se encontró.
+                    let dot = if p.missing.is_empty() { theme::GREEN } else { theme::WARN };
+                    let resp = theme::sidebar_item(ui, self.selected == Some(i), &p.title, Some(dot));
+                    if resp.on_hover_text(format!("{} canciones · {}", p.items.len(), p.created_at.format("%d/%m/%Y"))).clicked() {
+                        self.selected = Some(i);
+                    }
                 }
-            }
-        });
+            });
+        ui.add_space(4.0);
+        ui.separator();
+        if theme::sidebar_item(ui, self.settings.is_some(), "Ajustes", None).clicked() {
+            self.open_settings();
+        }
     }
 
     /// Aviso de primer uso: si falta yt-dlp o ffmpeg, ofrece instalarlos con winget.
@@ -270,38 +272,31 @@ impl PlaylistApp {
             return;
         }
         let mut install = false;
-        egui::Frame::new()
-            .fill(theme::INSET)
-            .stroke(egui::Stroke::new(1.0, theme::WARN.gamma_multiply(0.7)))
-            .inner_margin(egui::Margin::symmetric(12, 10))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                if installing {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(RichText::new("INSTALANDO HERRAMIENTAS…").monospace().size(11.5).color(theme::WARN));
-                    });
-                    ui.label(theme::meta("winget las descarga e instala; tarda uno o dos minutos."));
-                    return;
-                }
-                let mut what = Vec::new();
-                if missing_ytdlp {
-                    what.push("yt-dlp (para buscar y descargar)");
-                }
-                if missing_ffmpeg {
-                    what.push("ffmpeg (para MP3, carátula y etiquetas)");
-                }
+        theme::alert_card(theme::WARN).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            if installing {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("FALTAN HERRAMIENTAS").monospace().size(11.5).color(theme::WARN));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let busy = self.running || self.files_task.is_some();
-                        install = ui.add_enabled(!busy, theme::primary("Instalar lo que falta")).clicked();
-                    });
+                    ui.spinner();
+                    ui.label(theme::semibold("Instalando herramientas…", 14.0));
                 });
-                ui.label(what.join("  ·  "));
-                ui.label(theme::meta("Se instalan con winget, incluido en Windows 10 y 11."));
-            });
-        ui.add_space(6.0);
+                ui.label(theme::meta("winget las descarga e instala; tarda uno o dos minutos."));
+                return;
+            }
+            let mut what = Vec::new();
+            if missing_ytdlp {
+                what.push("yt-dlp (para buscar y descargar)");
+            }
+            if missing_ffmpeg {
+                what.push("ffmpeg (para MP3, carátula y etiquetas)");
+            }
+            ui.label(theme::semibold("Faltan herramientas", 14.0));
+            ui.label(what.join("  ·  "));
+            ui.label(theme::meta("Se instalan con winget, incluido en Windows 10 y 11."));
+            ui.add_space(4.0);
+            let busy = self.running || self.files_task.is_some();
+            install = ui.add_enabled(!busy, theme::primary("Instalar lo que falta")).clicked();
+        });
+        ui.add_space(10.0);
         if install {
             self.tools_installing = true;
             self.error = None;
@@ -314,22 +309,20 @@ impl PlaylistApp {
         }
     }
 
-    fn form(&mut self, ui: &mut egui::Ui) {
-        theme::section(ui, "01", "Nueva playlist");
-        egui::Grid::new("form").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
-            ui.label(theme::meta("CANTANTE"));
-            ui.add(
-                egui::TextEdit::singleline(&mut self.artist)
-                    .hint_text("Ej.: Queen, Shakira, Bad Bunny")
-                    .desired_width(300.0),
-            );
-            ui.end_row();
-
-            ui.label(theme::meta("Nº DE CANCIONES"));
-            ui.add(egui::DragValue::new(&mut self.count).range(1..=MAX_SONGS));
-            ui.end_row();
+    /// Pantalla "Nueva playlist": cantante, número de canciones y botón de crear.
+    fn new_view(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.add_space(6.0);
+            ui.label(theme::semibold("¿Qué playlist quieres crear?", 22.0));
+            ui.label(RichText::new("Escribe un cantante, elige cuántas canciones y pulsa Crear playlist.").color(theme::MUTED));
+            ui.add_space(12.0);
+            self.tools_banner(ui);
+            self.form(ui);
+            self.activity_card(ui);
         });
+    }
 
+    fn form(&mut self, ui: &mut egui::Ui) {
         let cost = playlist_cost(self.count);
         let remaining = self.quota.lock().unwrap().remaining();
         let blocker = if self.running {
@@ -346,44 +339,94 @@ impl PlaylistApp {
             None
         };
 
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let resp = ui.add_enabled(blocker.is_none(), theme::primary("Crear playlist"));
-            if resp.clicked() {
-                self.start_creation();
-            }
-            if self.running {
-                ui.spinner();
-            }
-            ui.label(theme::meta("COSTE"));
-            ui.label(theme::readout(format!("{} U.", thousands(cost))));
-            ui.label(theme::meta("·  IA"));
-            ui.label(theme::readout(self.config.llm.provider.label().to_uppercase()));
+        let mut start = false;
+        theme::card().inner_margin(egui::Margin::same(18)).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            theme::section(ui, "1", "¿De qué cantante?");
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut self.artist)
+                    .hint_text("Ej.: Queen, Shakira, Bad Bunny")
+                    .desired_width(f32::INFINITY)
+                    .margin(egui::Margin::symmetric(10, 8)),
+            );
+            start |= edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+            ui.add_space(16.0);
+            theme::section(ui, "2", "¿Cuántas canciones?");
+            ui.horizontal(|ui| {
+                for n in [5, 10, 15, 20, 30, 50] {
+                    if ui.add(theme::chip(self.count == n, &n.to_string())).clicked() {
+                        self.count = n;
+                    }
+                }
+                ui.add_space(8.0);
+                ui.label(theme::meta("Otra cantidad"));
+                ui.add(egui::DragValue::new(&mut self.count).range(1..=MAX_SONGS));
+            });
+
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::meta(format!(
+                    "Coste: {} unidades de cuota  ·  IA: {}",
+                    thousands(cost),
+                    self.config.llm.provider.label()
+                )));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    start |= ui.add_enabled(blocker.is_none(), theme::primary("Crear playlist")).clicked();
+                    if self.running {
+                        ui.spinner();
+                    } else if let Some(reason) = &blocker {
+                        ui.label(theme::meta(reason.as_str()));
+                    }
+                });
+            });
         });
-        if let Some(reason) = blocker.filter(|_| !self.running) {
-            ui.label(RichText::new(reason).color(theme::MUTED));
+        if start && blocker.is_none() {
+            self.start_creation();
         }
     }
 
-    fn progress_view(&mut self, ui: &mut egui::Ui) {
-        if self.progress.is_empty() && self.error.is_none() {
-            return;
-        }
-        ui.add_space(8.0);
-        theme::section(ui, "02", "Progreso del agente");
+    /// Tarjetas de error y de progreso (creación, descargas, instalaciones).
+    fn activity_card(&mut self, ui: &mut egui::Ui) {
         if let Some(err) = &self.error {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("ERROR").monospace().size(11.0).color(theme::DANGER));
+            ui.add_space(10.0);
+            theme::alert_card(theme::DANGER).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.label(theme::semibold("Algo ha fallado", 14.0));
                 ui.label(RichText::new(err).color(theme::DANGER));
             });
         }
         if self.progress.is_empty() {
             return;
         }
-        theme::inset().show(ui, |ui| {
-            ui.set_width(ui.available_width());
+        ui.add_space(10.0);
+        theme::card().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(theme::meta("Progreso"));
+            // Etapa de la creación según los mensajes del agente (si los hay).
+            let stage = self.progress.iter().filter_map(|l| creation_stage(l)).max();
+            if let Some(stage) = stage {
+                ui.add_space(2.0);
+                for (i, label) in ["Lista de canciones", "Buscar en YouTube", "Elegir la versión original", "Crear la playlist"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let state = if i < stage {
+                        theme::Step::Done
+                    } else if i == stage && self.running {
+                        theme::Step::Active
+                    } else {
+                        theme::Step::Pending
+                    };
+                    theme::step(ui, state, label);
+                }
+                ui.add_space(4.0);
+                ui.separator();
+            }
             egui::ScrollArea::vertical()
-                .max_height(110.0)
+                .id_salt("progress")
+                .max_height(96.0)
+                .auto_shrink([false, true])
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     let last = self.progress.len() - 1;
@@ -395,82 +438,138 @@ impl PlaylistApp {
                         } else {
                             theme::MUTED
                         };
-                        ui.label(RichText::new(format!("> {line}")).monospace().size(12.0).color(color));
+                        ui.label(RichText::new(line).monospace().size(11.5).color(color));
                     }
                 });
         });
     }
 
-    fn playlist_view(&mut self, ui: &mut egui::Ui) {
-        let delete_blocker = if self.running {
-            Some("Espera a que termine la playlist en curso.".to_string())
-        } else if self.deleting.is_some() {
-            Some("Ya se está borrando una playlist.".to_string())
-        } else if self.config.client_secret_path.trim().is_empty() {
-            Some("Falta configurar YouTube en Ajustes.".to_string())
-        } else if self.quota.lock().unwrap().remaining() < COST_DELETE {
-            Some(format!("Borrar cuesta {COST_DELETE} unidades de cuota y no quedan suficientes."))
-        } else {
-            None
-        };
-        ui.add_space(8.0);
-        theme::section(ui, "03", "Playlist");
-        let Some(p) = self.selected.and_then(|i| self.history.get(i)) else {
-            ui.label(theme::meta("Aquí aparecerá la playlist creada por el agente."));
-            return;
-        };
+    /// Centro de la pantalla de una playlist: título, link, avisos y canciones.
+    fn playlist_view(&mut self, ui: &mut egui::Ui, p: &PlaylistResult) {
+        ui.add_space(6.0);
+        ui.label(theme::semibold(&p.title, 22.0));
         let url = p.url();
-        let mut ask_delete = false;
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(&p.title).heading().strong().color(theme::TEXT));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.deleting.as_deref() == Some(p.playlist_id.as_str()) {
-                    ui.label(theme::meta("BORRANDO…"));
-                    ui.spinner();
-                } else {
-                    let resp = ui.add_enabled(delete_blocker.is_none(), theme::danger("Borrar playlist"));
-                    let resp = match &delete_blocker {
-                        Some(reason) => resp.on_disabled_hover_text(reason),
-                        None => resp.on_hover_text(format!("La borra de tu cuenta de YouTube ({COST_DELETE} unidades)")),
-                    };
-                    ask_delete = resp.clicked();
-                }
-                if ui.add(theme::secondary("Copiar link")).clicked() {
-                    ui.ctx().copy_text(url.clone());
-                }
-            });
-        });
-        ui.label(theme::meta(format!(
-            "{} CANCIONES  ·  OCULTA (UNLISTED)  ·  CREADA EL {}",
-            p.items.len(),
-            p.created_at.format("%d/%m/%Y %H:%M")
-        )));
-        ui.hyperlink_to(RichText::new(&url).monospace().size(12.5), &url);
-        if ask_delete {
-            self.confirm_delete = Some(p.playlist_id.clone());
-        }
+        ui.hyperlink_to(RichText::new(&url).monospace().size(12.0), &url);
         if !p.missing.is_empty() {
-            ui.colored_label(theme::WARN, format!("No encontradas o no añadidas: {}", p.missing.join(", ")));
+            ui.add_space(8.0);
+            theme::alert_card(theme::WARN).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.label(RichText::new(format!("No encontradas o no añadidas: {}", p.missing.join(", "))).color(theme::WARN));
+            });
         }
-        ui.add_space(4.0);
+        self.activity_card(ui);
+        ui.add_space(10.0);
 
+        theme::card().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.set_min_height(ui.available_height());
+            ui.label(theme::meta(format!("Canciones  ·  {}", p.items.len())));
+            TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(Column::exact(26.0))
+                .column(Column::initial(230.0).at_least(110.0).clip(true))
+                .column(Column::initial(130.0).at_least(70.0).clip(true))
+                .column(Column::exact(44.0))
+                .column(Column::remainder().at_least(110.0))
+                .header(24.0, |mut h| {
+                    for title in ["#", "Canción", "Canal", "Dur.", "Tipo"] {
+                        h.col(|ui| {
+                            ui.label(theme::meta(title));
+                        });
+                    }
+                })
+                .body(|mut body| {
+                    for (i, item) in p.items.iter().enumerate() {
+                        body.row(30.0, |mut row| {
+                            row.col(|ui| {
+                                ui.label(theme::meta((i + 1).to_string()));
+                            });
+                            row.col(|ui| {
+                                ui.hyperlink_to(RichText::new(&item.song).color(theme::TEXT), item.url())
+                                    .on_hover_text(format!("Vídeo: {}", item.video_title));
+                            });
+                            row.col(|ui| {
+                                ui.label(theme::meta(item.channel.as_deref().unwrap_or("YouTube Music")));
+                            });
+                            row.col(|ui| {
+                                ui.label(theme::meta(item.duration_secs.map(agent::format_duration).unwrap_or_default()));
+                            });
+                            row.col(|ui| {
+                                theme::kind_badge(ui, item.kind);
+                            });
+                        });
+                    }
+                });
+        });
+    }
+
+    /// Panel derecho: datos y descarga de la playlist elegida, herramientas y cuota.
+    fn info_panel(&mut self, ui: &mut egui::Ui, playlist: Option<&PlaylistResult>) {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            if let Some(p) = playlist {
+                self.playlist_card(ui, p);
+                ui.add_space(6.0);
+                self.download_card(ui, p);
+                ui.add_space(6.0);
+            }
+            self.tools_card(ui);
+            ui.add_space(6.0);
+            self.quota_card(ui);
+            if let Some(p) = playlist {
+                ui.add_space(6.0);
+                self.delete_button(ui, p);
+            }
+        });
+    }
+
+    fn playlist_card(&mut self, ui: &mut egui::Ui, p: &PlaylistResult) {
+        theme::card().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(theme::semibold(&p.artist, 15.0));
+            if p.missing.is_empty() {
+                theme::badge(ui, "Completa", theme::GREEN);
+            } else {
+                theme::badge(ui, &format!("Faltan {}", p.missing.len()), theme::WARN);
+            }
+            ui.add_space(4.0);
+            theme::row(ui, "Canciones", RichText::new(p.items.len().to_string()).color(theme::TEXT));
+            theme::row(ui, "Creada", RichText::new(p.created_at.format("%d/%m/%Y %H:%M").to_string()).color(theme::TEXT));
+            theme::row(ui, "Visibilidad", RichText::new("Oculta").color(theme::TEXT))
+                .on_hover_text("Unlisted: solo la ve quien tenga el link");
+            ui.add_space(4.0);
+            if ui.add(theme::secondary("Copiar link")).clicked() {
+                ui.ctx().copy_text(p.url());
+            }
+        });
+    }
+
+    fn download_card(&mut self, ui: &mut egui::Ui, p: &PlaylistResult) {
         let dir = download::playlist_dir(&self.config.download_dir, p);
         let downloaded = download::Manifest::load(&dir).downloaded(&dir, &p.items);
         let busy = self.running || self.files_task.is_some();
         let mut files_action = None;
-        ui.horizontal(|ui| {
+        theme::card().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(theme::meta("Descarga"));
+            theme::row(ui, "Descargadas", theme::semibold(format!("{downloaded} / {}", p.items.len()), 13.0));
+            theme::progress_bar(ui, downloaded as f32 / p.items.len().max(1) as f32);
+            ui.add_space(6.0);
             match &self.files_task {
                 Some((id, label)) if *id == p.playlist_id => {
-                    ui.spinner();
-                    ui.label(theme::meta(label.to_uppercase()));
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(*label);
+                    });
                 }
                 _ => {
                     let format = self.config.audio_format;
                     let has_ffmpeg = matches!(self.ffmpeg_status, Some(Ok(_)));
-                    let resp = ui.add_enabled(
-                        !busy && (has_ffmpeg || !format.needs_ffmpeg()),
-                        theme::primary(&format!("Descargar en {}", format.extension())),
-                    );
+                    let button = theme::primary(&format!("Descargar en {}", format.extension().to_uppercase()))
+                        .min_size(egui::vec2(ui.available_width(), 32.0));
+                    let resp = ui.add_enabled(!busy && (has_ffmpeg || !format.needs_ffmpeg()), button);
                     let hover = if format.needs_ffmpeg() && !has_ffmpeg {
                         "MP3 necesita ffmpeg. Instálalo o cambia el formato en Ajustes.".to_string()
                     } else if has_ffmpeg {
@@ -483,13 +582,11 @@ impl PlaylistApp {
                     }
                 }
             }
-            if ui.add(theme::secondary("Abrir carpeta")).clicked() {
+            if ui.add(theme::secondary("Abrir carpeta").min_size(egui::vec2(ui.available_width(), 30.0))).clicked() {
                 files_action = Some(FilesAction::OpenFolder);
             }
-            ui.label(theme::readout(format!("{downloaded} / {}", p.items.len())));
-            ui.label(theme::meta("DESCARGADAS"));
+            ui.label(theme::meta("Descarga solo música sobre la que tengas derechos."));
         });
-        ui.label(RichText::new("Descarga solo música sobre la que tengas derechos.").small().color(theme::MUTED));
         match files_action {
             Some(FilesAction::Download) => {
                 self.progress.clear();
@@ -505,53 +602,78 @@ impl PlaylistApp {
             }
             None => {}
         }
-        ui.add_space(6.0);
+    }
 
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::exact(28.0))
-            .column(Column::initial(180.0).at_least(100.0).clip(true))
-            .column(Column::initial(220.0).at_least(110.0).clip(true))
-            .column(Column::initial(130.0).at_least(80.0).clip(true))
-            .column(Column::exact(52.0))
-            .column(Column::remainder().at_least(120.0))
-            .header(24.0, |mut h| {
-                for title in ["#", "Canción", "Vídeo en YouTube", "Canal", "Dur.", "Tipo"] {
-                    h.col(|ui| {
-                        ui.label(theme::meta(title.to_uppercase()));
-                    });
-                }
+    fn tools_card(&mut self, ui: &mut egui::Ui) {
+        // "9.0.2-full_build-www.gyan.dev" → "9.0.2"
+        let ffmpeg = self
+            .ffmpeg_status
+            .as_ref()
+            .map(|r| r.as_ref().map(|v| v.split('-').next().unwrap_or(v).to_string()).map_err(Clone::clone));
+        theme::card().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(theme::meta("Herramientas"));
+            theme::status(ui, "yt-dlp", self.ytdlp_busy, self.ytdlp_status.as_ref(), "no disponible");
+            theme::status(ui, "ffmpeg", self.ffmpeg_busy, ffmpeg.as_ref(), "no disponible");
+        });
+    }
+
+    fn quota_card(&mut self, ui: &mut egui::Ui) {
+        let (used, reset) = {
+            let mut q = self.quota.lock().unwrap();
+            q.refresh(Utc::now());
+            (q.used(), quota::next_reset(Utc::now()))
+        };
+        theme::card()
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                theme::row(
+                    ui,
+                    "Cuota de YouTube hoy",
+                    theme::semibold(format!("{} %", (used as f32 * 100.0 / DAILY_LIMIT as f32).round()), 13.0),
+                );
+                theme::progress_bar(ui, used as f32 / DAILY_LIMIT as f32);
+                ui.label(theme::meta(format!(
+                    "{} de {} · se reinicia a las {}",
+                    thousands(used),
+                    thousands(DAILY_LIMIT),
+                    reset.format("%H:%M")
+                )));
             })
-            .body(|mut body| {
-                for (i, item) in p.items.iter().enumerate() {
-                    body.row(26.0, |mut row| {
-                        row.col(|ui| {
-                            ui.label(theme::meta(format!("{:02}", i + 1)));
-                        });
-                        row.col(|ui| {
-                            ui.label(RichText::new(&item.song).color(theme::TEXT));
-                        });
-                        row.col(|ui| {
-                            ui.hyperlink_to(&item.video_title, item.url());
-                        });
-                        row.col(|ui| {
-                            ui.label(RichText::new(item.channel.as_deref().unwrap_or("YouTube Music")).color(theme::MUTED));
-                        });
-                        row.col(|ui| {
-                            ui.label(
-                                RichText::new(item.duration_secs.map(agent::format_duration).unwrap_or_default())
-                                    .monospace()
-                                    .color(theme::MUTED),
-                            );
-                        });
-                        row.col(|ui| {
-                            theme::kind_badge(ui, item.kind);
-                        });
-                    });
-                }
+            .response
+            .on_hover_text(
+                "Contador local: suma el coste de cada llamada que hace esta app. \
+                 El dato oficial está en Google Cloud Console → Cuotas.",
+            );
+    }
+
+    fn delete_button(&mut self, ui: &mut egui::Ui, p: &PlaylistResult) {
+        let blocker = if self.running {
+            Some("Espera a que termine la playlist en curso.".to_string())
+        } else if self.deleting.is_some() {
+            Some("Ya se está borrando una playlist.".to_string())
+        } else if self.config.client_secret_path.trim().is_empty() {
+            Some("Falta configurar YouTube en Ajustes.".to_string())
+        } else if self.quota.lock().unwrap().remaining() < COST_DELETE {
+            Some(format!("Borrar cuesta {COST_DELETE} unidades de cuota y no quedan suficientes."))
+        } else {
+            None
+        };
+        if self.deleting.as_deref() == Some(p.playlist_id.as_str()) {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(theme::meta("Borrando…"));
             });
+            return;
+        }
+        let resp = ui.add_enabled(blocker.is_none(), theme::danger("Borrar playlist"));
+        let resp = match &blocker {
+            Some(reason) => resp.on_disabled_hover_text(reason),
+            None => resp.on_hover_text(format!("La borra de tu cuenta de YouTube ({COST_DELETE} unidades)")),
+        };
+        if resp.clicked() {
+            self.confirm_delete = Some(p.playlist_id.clone());
+        }
     }
 
     fn confirm_delete_window(&mut self, ctx: &egui::Context) {
@@ -574,9 +696,10 @@ impl PlaylistApp {
                 )).color(theme::MUTED));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let delete = egui::Button::new(RichText::new("BORRAR").monospace().size(12.0).strong().color(Color32::WHITE))
-                        .fill(Color32::from_rgb(170, 40, 40))
-                        .min_size(egui::vec2(0.0, 30.0));
+                    let delete = egui::Button::new(theme::semibold("Borrar", 13.0).color(Color32::WHITE))
+                        .fill(Color32::from_rgb(190, 50, 50))
+                        .stroke(egui::Stroke::NONE)
+                        .min_size(egui::vec2(0.0, 32.0));
                     confirmed = ui.add(delete).clicked();
                     cancelled = ui.add(theme::secondary("Cancelar")).clicked();
                 });
@@ -610,7 +733,7 @@ impl PlaylistApp {
                 // Los botones Guardar/Cancelar quedan fuera del scroll, siempre a la vista.
                 let max_height = (ui.ctx().content_rect().height() - 150.0).max(200.0);
                 egui::ScrollArea::vertical().max_height(max_height).show(ui, |ui| {
-                    theme::section(ui, "01", "Inteligencia artificial");
+                    theme::section(ui, "1", "Inteligencia artificial");
                     egui::Grid::new("llm").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                         ui.label("Proveedor:");
                         let before = draft.config.llm.provider;
@@ -652,7 +775,7 @@ impl PlaylistApp {
                     });
 
                     ui.add_space(8.0);
-                    theme::section(ui, "02", "yt-dlp (búsqueda y descargas)");
+                    theme::section(ui, "2", "yt-dlp (búsqueda y descargas)");
                     ui.horizontal(|ui| {
                         ui.label("Ejecutable:");
                         ui.add(egui::TextEdit::singleline(&mut draft.config.ytdlp_path).desired_width(220.0));
@@ -690,7 +813,7 @@ impl PlaylistApp {
                     }
 
                     ui.add_space(8.0);
-                    theme::section(ui, "03", "Descargas");
+                    theme::section(ui, "3", "Descargas");
                     ui.horizontal(|ui| {
                         ui.label("Carpeta de descargas:");
                         ui.add(egui::TextEdit::singleline(&mut draft.config.download_dir).desired_width(300.0));
@@ -744,7 +867,7 @@ impl PlaylistApp {
                     }
 
                     ui.add_space(8.0);
-                    theme::section(ui, "04", "YouTube");
+                    theme::section(ui, "4", "YouTube");
                     ui.horizontal(|ui| {
                         ui.label("client_secret.json:");
                         ui.add(
@@ -764,7 +887,7 @@ impl PlaylistApp {
                                 ui.label("Esperando autorización en el navegador…");
                             }
                             Some(Ok(channel)) => {
-                                ui.label(theme::meta("CONECTADO"));
+                                ui.label(theme::meta("Conectado:"));
                                 ui.label(theme::readout(channel.as_str()));
                             }
                             Some(Err(e)) => {
@@ -850,27 +973,47 @@ impl eframe::App for PlaylistApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_events();
 
-        let bar = |fill| egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(14, 8));
-        egui::Panel::top("top").frame(bar(theme::BG)).show(ui, |ui| self.top_bar(ui));
-        egui::Panel::bottom("status").frame(bar(theme::INSET)).show(ui, |ui| self.status_bar(ui));
-        egui::Panel::left("history")
-            .resizable(true)
-            .default_size(220.0)
-            .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 8)))
-            .show(ui, |ui| self.history_panel(ui));
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(22, 14)))
-            .show(ui, |ui| {
-                self.tools_banner(ui);
-                self.form(ui);
-                self.progress_view(ui);
-                self.playlist_view(ui);
-            });
+        // Sin playlist elegida se muestra la pantalla "Nueva playlist".
+        let playlist = self.selected.and_then(|i| self.history.get(i)).cloned();
+        let frame = |fill, x, y| egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(x, y));
+        egui::Panel::top("top")
+            .frame(frame(theme::SIDEBAR, 12, 6))
+            .show(ui, |ui| self.top_bar(ui, playlist.as_ref()));
+        egui::Panel::left("sidebar")
+            .resizable(false)
+            .exact_size(206.0)
+            .frame(frame(theme::SIDEBAR, 8, 10))
+            .show(ui, |ui| self.sidebar(ui));
+        egui::Panel::right("info")
+            .resizable(false)
+            .exact_size(272.0)
+            .frame(frame(theme::BG, 14, 16))
+            .show(ui, |ui| self.info_panel(ui, playlist.as_ref()));
+        egui::CentralPanel::default().frame(frame(theme::BG, 22, 14)).show(ui, |ui| match &playlist {
+            Some(p) => self.playlist_view(ui, p),
+            None => self.new_view(ui),
+        });
 
         let ctx = ui.ctx().clone();
         self.settings_window(&ctx);
         self.confirm_delete_window(&ctx);
     }
+}
+
+/// Etapa de la creación (0 a 4) que indica un mensaje de progreso del agente.
+fn creation_stage(line: &str) -> Option<usize> {
+    [
+        ("Pidiendo a", 0),
+        ("Lista de", 1),
+        ("Buscando", 1),
+        ("Eligiendo", 2),
+        ("Creando la playlist", 3),
+        ("Añadiendo", 3),
+        ("Playlist creada", 4),
+    ]
+    .into_iter()
+    .find(|(prefix, _)| line.starts_with(prefix))
+    .map(|(_, stage)| stage)
 }
 
 /// 10000 → "10.000"
@@ -888,6 +1031,15 @@ fn thousands(n: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn etapa_de_creacion_segun_el_mensaje() {
+        assert_eq!(super::creation_stage("Pidiendo a DeepSeek las 10 canciones…"), Some(0));
+        assert_eq!(super::creation_stage("Buscando 3/10: Iris"), Some(1));
+        assert_eq!(super::creation_stage("Añadiendo 2/10: Iris"), Some(3));
+        assert_eq!(super::creation_stage("Playlist creada con 10 canciones."), Some(4));
+        assert_eq!(super::creation_stage("Descargando 1/10: Iris"), None);
+    }
+
     #[test]
     fn separador_de_miles() {
         assert_eq!(super::thousands(10_000), "10.000");
