@@ -89,6 +89,42 @@ pub struct Config {
     /// Carpeta donde se guardan las descargas (una subcarpeta por playlist).
     #[serde(default = "default_download_dir")]
     pub download_dir: String,
+    #[serde(default)]
+    pub audio_format: AudioFormat,
+    /// Ruta de ffmpeg. Vacía = buscarlo automáticamente.
+    #[serde(default)]
+    pub ffmpeg_path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AudioFormat {
+    /// AAC tal como lo sirve YouTube. Sin ffmpeg se guarda sin carátula ni etiquetas.
+    #[default]
+    M4a,
+    /// MP3 VBR de alta calidad. Necesita ffmpeg.
+    Mp3,
+}
+
+impl AudioFormat {
+    pub const ALL: [AudioFormat; 2] = [AudioFormat::M4a, AudioFormat::Mp3];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AudioFormat::M4a => "M4A (AAC, calidad original)",
+            AudioFormat::Mp3 => "MP3 (máxima compatibilidad)",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            AudioFormat::M4a => "m4a",
+            AudioFormat::Mp3 => "mp3",
+        }
+    }
+
+    pub fn needs_ffmpeg(self) -> bool {
+        self == AudioFormat::Mp3
+    }
 }
 
 /// %USERPROFILE%\Music\PlaylistYT
@@ -112,6 +148,8 @@ impl Default for Config {
             ytdlp_path: "yt-dlp".into(),
             client_secret_path: String::new(),
             download_dir: default_download_dir(),
+            audio_format: AudioFormat::default(),
+            ffmpeg_path: String::new(),
         }
     }
 }

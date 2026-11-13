@@ -1,5 +1,6 @@
 //! yt-dlp: búsqueda de vídeos (no gasta cuota de la YouTube Data API) y descarga de audio.
 
+use crate::config::AudioFormat;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -41,7 +42,7 @@ struct EntryJson {
     view_count: Option<u64>,
 }
 
-fn command(bin: &str) -> Command {
+pub(crate) fn command(bin: &str) -> Command {
     let mut cmd = Command::new(bin);
     cmd.kill_on_drop(true);
     #[cfg(windows)]
@@ -124,33 +125,62 @@ fn encode_query(q: &str) -> String {
 }
 
 /// Descarga el audio de un vídeo en `dir` como `{id}.{ext}` y devuelve la ruta del archivo.
-/// Sin ffmpeg no se convierte: se guarda la mejor pista de audio m4a (o la mejor que haya).
-pub async fn download_audio(bin: &str, video_id: &str, dir: &Path) -> Result<PathBuf> {
-    let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let dir_s = dir.to_string_lossy();
-    run(
-        bin,
-        &[
-            &url,
-            "-f",
-            "bestaudio[ext=m4a]/bestaudio",
-            "--no-playlist",
-            "--no-warnings",
-            "--no-progress",
-            "-P",
-            &dir_s,
-            "-o",
-            "%(id)s.%(ext)s",
-        ],
-    )
-    .await?;
+/// Con ffmpeg convierte al formato pedido e incrusta etiquetas y carátula; sin ffmpeg guarda
+/// la mejor pista m4a (o la mejor que haya) tal cual.
+pub async fn download_audio(
+    bin: &str,
+    video_id: &str,
+    dir: &Path,
+    format: AudioFormat,
+    ffmpeg: Option<&Path>,
+) -> Result<PathBuf> {
+    let args = download_args(video_id, dir, format, ffmpeg)?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    run(bin, &args).await?;
+    let expected = ffmpeg.map(|_| format.extension());
     std::fs::read_dir(dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .find(|p| {
+            let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
             p.file_stem().is_some_and(|s| s == video_id)
-                && p.extension().is_some_and(|e| e != "part" && e != "ytdl")
+                && match expected {
+                    Some(want) => ext == want,
+                    None => !["part", "ytdl", "jpg", "webp", "png"].contains(&ext.as_str()),
+                }
         })
         .with_context(|| format!("yt-dlp terminó pero no aparece el archivo de {video_id}"))
+}
+
+fn download_args(video_id: &str, dir: &Path, format: AudioFormat, ffmpeg: Option<&Path>) -> Result<Vec<String>> {
+    let mut args: Vec<String> = vec![
+        format!("https://www.youtube.com/watch?v={video_id}"),
+        "--no-playlist".into(),
+        "--no-warnings".into(),
+        "--no-progress".into(),
+        "-P".into(),
+        dir.to_string_lossy().into_owned(),
+        "-o".into(),
+        "%(id)s.%(ext)s".into(),
+        "-f".into(),
+    ];
+    match (format, ffmpeg) {
+        (AudioFormat::M4a, None) => args.push("bestaudio[ext=m4a]/bestaudio".into()),
+        (AudioFormat::Mp3, None) => bail!("Para descargar en MP3 hace falta ffmpeg (winget install Gyan.FFmpeg)."),
+        (_, Some(ffmpeg)) => {
+            args.push(if format == AudioFormat::M4a { "bestaudio[ext=m4a]/bestaudio" } else { "bestaudio" }.into());
+            args.extend(["-x", "--audio-format", format.extension()].map(String::from));
+            if format == AudioFormat::Mp3 {
+                // VBR V0 (~245 kbps): transparente para fuentes de YouTube.
+                args.extend(["--audio-quality", "0"].map(String::from));
+            }
+            args.extend(
+                ["--embed-metadata", "--embed-thumbnail", "--convert-thumbnails", "jpg", "--ffmpeg-location"]
+                    .map(String::from),
+            );
+            args.push(ffmpeg.to_string_lossy().into_owned());
+        }
+    }
+    Ok(args)
 }
 
 pub async fn version(bin: &str) -> Result<String> {
@@ -205,6 +235,20 @@ mod tests {
         let c = parse_search_json(json, Source::Music).unwrap();
         assert_eq!(c[0].channel, None);
         assert_eq!(c[0].source, Source::Music);
+    }
+
+    #[test]
+    fn argumentos_de_descarga_segun_formato() {
+        let dir = Path::new("C:\\musica");
+        let sin = download_args("id1", dir, AudioFormat::M4a, None).unwrap();
+        assert!(!sin.contains(&"-x".to_string()));
+        assert!(download_args("id1", dir, AudioFormat::Mp3, None).is_err());
+
+        let mp3 = download_args("id1", dir, AudioFormat::Mp3, Some(Path::new("C:\\ff\\ffmpeg.exe"))).unwrap();
+        let joined = mp3.join(" ");
+        assert!(joined.contains("-x --audio-format mp3 --audio-quality 0"), "{joined}");
+        assert!(joined.contains("--embed-thumbnail"));
+        assert!(joined.ends_with("--ffmpeg-location C:\\ff\\ffmpeg.exe"));
     }
 
     #[test]

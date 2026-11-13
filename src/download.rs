@@ -5,9 +5,10 @@
 //! archivo corresponde a cada vídeo, para no repetir descargas y poder renombrar.
 
 use crate::agent::Progress;
+use crate::config::Config;
 use crate::history::{PlaylistItem, PlaylistResult};
 use crate::llm::LlmClient;
-use crate::ytdlp;
+use crate::{ffmpeg, ytdlp};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -100,16 +101,21 @@ fn extension(path: &Path) -> String {
 }
 
 /// Descarga las canciones que falten. Devuelve un resumen para la interfaz.
-pub async fn download_playlist(
-    bin: &str,
-    playlist: &PlaylistResult,
-    base: &str,
-    progress: Progress,
-) -> Result<String> {
+pub async fn download_playlist(config: &Config, playlist: &PlaylistResult, progress: Progress) -> Result<String> {
+    let (bin, base, format) = (config.ytdlp_path.trim(), config.download_dir.as_str(), config.audio_format);
     if base.trim().is_empty() {
         bail!("Elige una carpeta de descargas en Ajustes.");
     }
     ytdlp::version(bin).await?;
+    let ffmpeg = match ffmpeg::find(&config.ffmpeg_path).await {
+        Ok(f) => Some(f.path),
+        Err(e) if format.needs_ffmpeg() => return Err(e),
+        Err(_) => {
+            progress("Aviso: sin ffmpeg las canciones se guardan sin carátula ni etiquetas.".into());
+            None
+        }
+    };
+    progress(format!("Formato: {}", format.label()));
     let dir = playlist_dir(base, playlist);
     std::fs::create_dir_all(&dir).with_context(|| format!("no se pudo crear la carpeta {}", dir.display()))?;
     let mut manifest = Manifest::load(&dir);
@@ -122,7 +128,7 @@ pub async fn download_playlist(
             continue;
         }
         progress(format!("Descargando {}/{total}: {}", i + 1, item.song));
-        match ytdlp::download_audio(bin, &item.video_id, &dir).await {
+        match ytdlp::download_audio(bin, &item.video_id, &dir, format, ffmpeg.as_deref()).await {
             Ok(path) => {
                 // Nombre provisional legible; "Limpiar nombres" lo deja en "{cantante} - {canción}".
                 let mut taken = names_in(&dir);
@@ -287,14 +293,22 @@ mod tests {
             missing: vec![],
         };
         let progress: Progress = std::sync::Arc::new(|m| println!("{m}"));
-        let base_s = base.to_string_lossy().into_owned();
-        download_playlist("yt-dlp", &playlist, &base_s, progress.clone()).await.unwrap();
-        let dir = playlist_dir(&base_s, &playlist);
-        assert!(dir.join("El Rey.m4a").is_file());
-        assert_eq!(Manifest::load(&dir).downloaded(&dir, &playlist.items), 1);
-        // La segunda vez no vuelve a descargar.
-        let summary = download_playlist("yt-dlp", &playlist, &base_s, progress).await.unwrap();
-        assert!(summary.contains("1 ya estaban"), "{summary}");
+        for format in crate::config::AudioFormat::ALL {
+            let config = Config {
+                download_dir: base.join(format.extension()).to_string_lossy().into_owned(),
+                audio_format: format,
+                ..Config::default()
+            };
+            download_playlist(&config, &playlist, progress.clone()).await.unwrap();
+            let dir = playlist_dir(&config.download_dir, &playlist);
+            let file = dir.join(format!("El Rey.{}", format.extension()));
+            assert!(file.is_file(), "falta {}", file.display());
+            println!("{} -> {} bytes", file.display(), std::fs::metadata(&file).unwrap().len());
+            assert_eq!(Manifest::load(&dir).downloaded(&dir, &playlist.items), 1);
+            // La segunda vez no vuelve a descargar.
+            let summary = download_playlist(&config, &playlist, progress.clone()).await.unwrap();
+            assert!(summary.contains("1 ya estaban"), "{summary}");
+        }
         std::fs::remove_dir_all(&base).unwrap();
     }
 

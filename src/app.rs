@@ -2,7 +2,7 @@
 //! historial y ventana de ajustes.
 
 use crate::agent::{self, MAX_SONGS, Request};
-use crate::config::{self, Config, Provider};
+use crate::config::{self, AudioFormat, Config, Provider};
 use crate::download;
 use crate::history::{self, PlaylistResult};
 use crate::quota::{self, COST_DELETE, DAILY_LIMIT, Quota, playlist_cost};
@@ -48,6 +48,9 @@ pub struct PlaylistApp {
     deleting: Option<String>,
     /// Descarga o limpieza de nombres en curso: (id de la playlist, texto a mostrar).
     files_task: Option<(String, &'static str)>,
+    /// Versión de ffmpeg o motivo por el que no está disponible.
+    ffmpeg_status: Option<Result<String, String>>,
+    ffmpeg_busy: bool,
 }
 
 enum FilesAction {
@@ -65,6 +68,7 @@ impl PlaylistApp {
         let history = history::load();
 
         worker.send(Command::CheckYtdlp(config.ytdlp_path.clone()));
+        worker.send(Command::CheckFfmpeg(config.ffmpeg_path.clone()));
         let youtube_busy = Config::tokens_path().exists() && !config.client_secret_path.is_empty();
         if youtube_busy {
             worker.send(Command::ConnectYoutube(config.clone()));
@@ -90,6 +94,8 @@ impl PlaylistApp {
             confirm_delete: None,
             deleting: None,
             files_task: None,
+            ffmpeg_status: None,
+            ffmpeg_busy: true,
         }
     }
 
@@ -119,6 +125,10 @@ impl PlaylistApp {
                         Ok(()) => self.remove_from_history(&playlist_id),
                         Err(msg) => self.error = Some(format!("No se pudo borrar la playlist: {msg}")),
                     }
+                }
+                Event::FfmpegFound(result) => {
+                    self.ffmpeg_busy = false;
+                    self.ffmpeg_status = Some(result);
                 }
                 Event::FilesTaskDone(result) => {
                     self.files_task = None;
@@ -393,10 +403,20 @@ impl PlaylistApp {
                     ui.label(*label);
                 }
                 _ => {
-                    if ui
-                        .add_enabled(!busy && downloaded < p.items.len(), egui::Button::new("Descargar audio"))
-                        .on_hover_text("Guarda el audio de cada canción con yt-dlp (m4a, sin convertir)")
-                        .clicked()
+                    let format = self.config.audio_format;
+                    let has_ffmpeg = matches!(self.ffmpeg_status, Some(Ok(_)));
+                    let resp = ui.add_enabled(
+                        !busy && downloaded < p.items.len() && (has_ffmpeg || !format.needs_ffmpeg()),
+                        egui::Button::new(format!("Descargar en {}", format.extension().to_uppercase())),
+                    );
+                    let hover = if format.needs_ffmpeg() && !has_ffmpeg {
+                        "MP3 necesita ffmpeg. Instálalo o cambia el formato en Ajustes.".to_string()
+                    } else if has_ffmpeg {
+                        format!("{}, con carátula y etiquetas. El formato se cambia en Ajustes.", format.label())
+                    } else {
+                        format!("{}. Sin ffmpeg no lleva carátula ni etiquetas.", format.label())
+                    };
+                    if resp.on_hover_text(&hover).on_disabled_hover_text(&hover).clicked()
                     {
                         files_action = Some(FilesAction::Download);
                     }
@@ -526,6 +546,7 @@ impl PlaylistApp {
         let mut check_ytdlp = false;
         let mut update_ytdlp = false;
         let mut connect_youtube = false;
+        let mut check_ffmpeg = false;
 
         egui::Window::new("Ajustes")
             .open(&mut open)
@@ -605,6 +626,44 @@ impl PlaylistApp {
                     ui.add(egui::TextEdit::singleline(&mut draft.config.download_dir).desired_width(300.0));
                 });
                 ui.weak("Cada playlist se guarda en su propia subcarpeta.");
+                let has_ffmpeg = matches!(self.ffmpeg_status, Some(Ok(_)));
+                ui.horizontal(|ui| {
+                    ui.label("Formato de audio:");
+                    egui::ComboBox::from_id_salt("audio_format")
+                        .selected_text(draft.config.audio_format.label())
+                        .width(240.0)
+                        .show_ui(ui, |ui| {
+                            for f in AudioFormat::ALL {
+                                ui.add_enabled_ui(has_ffmpeg || !f.needs_ffmpeg(), |ui| {
+                                    ui.selectable_value(&mut draft.config.audio_format, f, f.label())
+                                        .on_disabled_hover_text("Necesita ffmpeg");
+                                });
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("ffmpeg:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut draft.config.ffmpeg_path)
+                            .hint_text("Vacío = buscarlo automáticamente")
+                            .desired_width(220.0),
+                    );
+                    if ui.add_enabled(!self.ffmpeg_busy, egui::Button::new("Comprobar")).clicked() {
+                        check_ffmpeg = true;
+                    }
+                });
+                match &self.ffmpeg_status {
+                    _ if self.ffmpeg_busy => {
+                        ui.spinner();
+                    }
+                    Some(Ok(v)) => {
+                        ui.weak(format!("ffmpeg {v}: permite MP3 y añade carátula y etiquetas a las descargas."));
+                    }
+                    Some(Err(e)) => {
+                        ui.colored_label(Color32::from_rgb(220, 120, 0), e);
+                    }
+                    None => {}
+                }
 
                 ui.separator();
                 ui.heading("YouTube");
@@ -666,6 +725,10 @@ impl PlaylistApp {
                 Command::CheckYtdlp(bin)
             });
         }
+        if check_ffmpeg {
+            self.ffmpeg_busy = true;
+            self.worker.send(Command::CheckFfmpeg(draft.config.ffmpeg_path.clone()));
+        }
         if connect_youtube {
             self.youtube_busy = true;
             self.worker.send(Command::ConnectYoutube(draft.config.clone()));
@@ -674,6 +737,10 @@ impl PlaylistApp {
         match action {
             SettingsAction::Save => {
                 let ytdlp_changed = draft.config.ytdlp_path != self.config.ytdlp_path;
+                if draft.config.ffmpeg_path != self.config.ffmpeg_path && !self.ffmpeg_busy {
+                    self.ffmpeg_busy = true;
+                    self.worker.send(Command::CheckFfmpeg(draft.config.ffmpeg_path.clone()));
+                }
                 self.config = draft.config;
                 self.api_key = draft.api_key.trim().to_string();
                 let mut errors = Vec::new();

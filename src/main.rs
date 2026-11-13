@@ -4,6 +4,7 @@ mod agent;
 mod app;
 mod config;
 mod download;
+mod ffmpeg;
 mod history;
 mod llm;
 mod quota;

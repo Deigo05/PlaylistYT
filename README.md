@@ -26,6 +26,10 @@ Necesitas tres cosas: **una API key de un LLM**, **yt-dlp** y **un cliente OAuth
   winget install yt-dlp
   ```
   Mantenlo al día: si YouTube cambia algo, las búsquedas o descargas fallan (por ejemplo con "HTTP Error 403"). Actualiza con `winget upgrade yt-dlp` o, si lo instalaste con pip, `python -m pip install -U "yt-dlp[default]"`.
+- **ffmpeg** (opcional, recomendado): permite descargar en MP3 y añade carátula y etiquetas (artista, álbum, año) a los archivos.
+  ```
+  winget install Gyan.FFmpeg
+  ```
 
 ### 2. Compilar y abrir la app
 ```
@@ -71,8 +75,10 @@ Escribe el cantante, elige el número de canciones (1–50) y pulsa **Crear play
 ### 7. Descargar el audio y ordenar los nombres
 Descarga solo música sobre la que tengas derechos.
 
-1. En **Ajustes → Carpeta de descargas** elige dónde guardar (por defecto `Música\PlaylistYT`). Cada playlist va a su propia subcarpeta.
-2. Pulsa **Descargar audio**. yt-dlp guarda cada canción en m4a (la pista de audio original, sin convertir; no hace falta ffmpeg). Si se corta, al volver a pulsar solo descarga las que falten.
+1. En **Ajustes** elige la **carpeta de descargas** (por defecto `Música\PlaylistYT`; cada playlist va a su propia subcarpeta) y el **formato**:
+   - **M4A (AAC)**: la pista de audio tal como la sirve YouTube, sin pérdida extra. Suena en móviles, PC, iTunes/Apple Music y la mayoría de reproductores.
+   - **MP3**: el formato más compatible (radios de coche, reproductores antiguos, USB). Se convierte a VBR de alta calidad (~245 kbps); convertir no mejora el sonido, solo la compatibilidad. Necesita ffmpeg.
+2. Pulsa **Descargar en M4A/MP3**. Con ffmpeg, cada archivo lleva la carátula del álbum y sus etiquetas. Si se corta, al volver a pulsar solo descarga las que falten.
 3. Pulsa **Limpiar nombres con IA**. El LLM renombra los archivos a `Cantante - Canción` (por ejemplo `Tom Odell - Half As Good As You (feat. Alice Merton).m4a`).
 4. **Abrir carpeta** te lleva directamente a los archivos.
 
